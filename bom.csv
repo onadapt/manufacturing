@@ -1,0 +1,20 @@
+level,part_number,description,category,quantity,unit,station,supply_type,notes
+0,DRN-FG-600,Packaged finished inspection drone,Finished good,1,each,FG Inventory,make,Top-level finished drone assembly
+1,DRN-FRM-001,Carbon fiber main frame kit,Airframe,1,set,Airframe,buy,Includes top plate bottom plate and standoffs
+1,DRN-ARM-001,Carbon fiber arm set,Airframe,1,set,Airframe,buy,Four arms for quadcopter frame
+1,DRN-HDW-001,Fastener and thread-lock kit,Airframe,1,set,Airframe,buy,Screws spacers lock nuts and thread locker
+1,DRN-MTR-001,Brushless motor clockwise/counterclockwise set,Propulsion,4,each,Airframe,buy,Matched motors mounted to arms
+1,DRN-ESC-001,Electronic speed controller,Propulsion,4,each,Electronics,buy,One ESC per motor
+1,DRN-PDB-001,Power distribution board,Power,1,each,Electronics,buy,Distributes battery power to ESCs and flight controller
+1,DRN-BAT-001,Lithium polymer flight battery,Power,1,each,Electronics,buy,Production battery pack
+1,DRN-PWR-001,XT60 battery lead and capacitor kit,Power,1,set,Electronics,buy,Main power lead filtering and strain relief
+1,DRN-FC-001,Flight controller with IMU,Controls,1,each,Electronics,buy,Mounted with vibration isolation
+1,DRN-RX-001,Radio receiver,Controls,1,each,Electronics,buy,Bound during firmware calibration
+1,DRN-GPS-001,GPS and compass module,Navigation,1,each,Electronics,buy,Optional by model but included in prototype BOM
+1,DRN-CAM-001,Camera/sensor payload module,Payload,1,each,Electronics,buy,Camera or inspection sensor payload
+1,DRN-WIR-001,Wiring harness and heat shrink kit,Electrical,1,set,Electronics,buy,Signal wires power leads sleeves and ties
+1,DRN-FW-001,Firmware image and configuration profile,Software,1,each,Firmware,make,Loaded and configured per drone
+1,DRN-PROP-001,Propeller clockwise/counterclockwise set,Propulsion,1,set,Motor Test,buy,Installed after motor direction checks
+1,DRN-LBL-001,Serial label and compliance label set,Packaging,1,set,Packaged,buy,Applied after final acceptance
+1,DRN-PKG-001,Protective packaging kit,Packaging,1,set,Packaged,buy,Box foam inserts manuals and accessories bag
+1,DRN-DOC-001,Inspection and test record,Quality,1,each,QA Test,make,Traceability record from QA release

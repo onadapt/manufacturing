@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Drone Bill of Materials</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="bom-shell">
+      <header class="bom-header">
+        <div>
+          <p class="eyebrow">Drone production</p>
+          <h1>Bill of Materials</h1>
+          <p class="bom-intro">
+            Prototype BOM for one packaged inspection drone, aligned to the manufacturing floor workstations.
+          </p>
+        </div>
+        <div class="bom-actions">
+          <a class="nav-link" href="index.html">Floor</a>
+          <a class="nav-link" href="production-orders.html">Orders</a>
+          <a class="nav-link" href="production-plan.html">Plan</a>
+          <a class="nav-link" href="inventory.html">Inventory</a>
+          <a class="nav-link" href="bom.csv">CSV</a>
+        </div>
+      </header>
+
+      <section class="bom-summary" aria-label="BOM summary">
+        <div>
+          <span>Finished good</span>
+          <strong>DRN-FG-600</strong>
+        </div>
+        <div>
+          <span>Line items</span>
+          <strong>19</strong>
+        </div>
+        <div>
+          <span>Build type</span>
+          <strong>Prototype</strong>
+        </div>
+      </section>
+
+      <section class="bom-table-wrap" aria-label="Drone bill of materials table">
+        <table class="bom-table">
+          <thead>
+            <tr>
+              <th>Level</th>
+              <th>Part Number</th>
+              <th>Description</th>
+              <th>Category</th>
+              <th>Qty</th>
+              <th>Station</th>
+              <th>Type</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>0</td>
+              <td>DRN-FG-600</td>
+              <td>Packaged finished inspection drone</td>
+              <td>Finished good</td>
+              <td>1 each</td>
+              <td>FG Inventory</td>
+              <td>Make</td>
+              <td>Top-level finished drone assembly</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>DRN-FRM-001</td>
+              <td>Carbon fiber main frame kit</td>
+              <td>Airframe</td>
+              <td>1 set</td>
+              <td>Airframe</td>
+              <td>Buy</td>
+              <td>Includes top plate, bottom plate, and standoffs</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>DRN-ARM-001</td>
+              <td>Carbon fiber arm set</td>
+              <td>Airframe</td>
+              <td>1 set</td>
+              <td>Airframe</td>
+              <td>Buy</td>
+              <td>Four arms for quadcopter frame</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>DRN-HDW-001</td>
+              <td>Fastener and thread-lock kit</td>
+              <td>Airframe</td>
+              <td>1 set</td>
+              <td>Airframe</td>
+              <td>Buy</td>
+              <td>Screws, spacers, lock nuts, and thread locker</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>DRN-MTR-001</td>
+              <td>Brushless motor clockwise/counterclockwise set</td>
+              <td>Propulsion</td>
+              <td>4 each</td>
+              <td>Airframe</td>
+              <td>Buy</td>
+              <td>Matched motors mounted to arms</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>DRN-ESC-001</td>
+              <td>Electronic speed controller</td>
+              <td>Propulsion</td>
+              <td>4 each</td>
+              <td>Electronics</td>
+              <td>Buy</td>
+              <td>One ESC per motor</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>DRN-PDB-001</td>
+              <td>Power distribution board</td>
+              <td>Power</td>
+              <td>1 each</td>
+              <td>Electronics</td>
+              <td>Buy</td>
+              <td>Distributes battery power to ESCs and flight controller</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>DRN-BAT-001</td>
+              <td>Lithium polymer flight battery</td>
+              <td>Power</td>
+              <td>1 each</td>
+              <td>Electronics</td>
+              <td>Buy</td>
+              <td>Production battery pack</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>DRN-PWR-001</td>
+              <td>XT60 battery lead and capacitor kit</td>
+              <td>Power</td>
+              <td>1 set</td>
+              <td>Electronics</td>
+              <td>Buy</td>
+              <td>Main power lead filtering and strain relief</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>DRN-FC-001</td>
+              <td>Flight controller with IMU</td>
+              <td>Controls</td>
+              <td>1 each</td>
+              <td>Electronics</td>
+              <td>Buy</td>
+              <td>Mounted with vibration isolation</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>DRN-RX-001</td>
+              <td>Radio receiver</td>
+              <td>Controls</td>
+              <td>1 each</td>
+              <td>Electronics</td>
+              <td>Buy</td>
+              <td>Bound during firmware calibration</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>DRN-GPS-001</td>
+              <td>GPS and compass module</td>
+              <td>Navigation</td>
+              <td>1 each</td>
+              <td>Electronics</td>
+              <td>Buy</td>
+              <td>Optional by model but included in prototype BOM</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>DRN-CAM-001</td>
+              <td>Camera/sensor payload module</td>
+              <td>Payload</td>
+              <td>1 each</td>
+              <td>Electronics</td>
+              <td>Buy</td>
+              <td>Camera or inspection sensor payload</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>DRN-WIR-001</td>
+              <td>Wiring harness and heat shrink kit</td>
+              <td>Electrical</td>
+              <td>1 set</td>
+              <td>Electronics</td>
+              <td>Buy</td>
+              <td>Signal wires, power leads, sleeves, and ties</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>DRN-FW-001</td>
+              <td>Firmware image and configuration profile</td>
+              <td>Software</td>
+              <td>1 each</td>
+              <td>Firmware</td>
+              <td>Make</td>
+              <td>Loaded and configured per drone</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>DRN-PROP-001</td>
+              <td>Propeller clockwise/counterclockwise set</td>
+              <td>Propulsion</td>
+              <td>1 set</td>
+              <td>Motor Test</td>
+              <td>Buy</td>
+              <td>Installed after motor direction checks</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>DRN-LBL-001</td>
+              <td>Serial label and compliance label set</td>
+              <td>Packaging</td>
+              <td>1 set</td>
+              <td>Packaged</td>
+              <td>Buy</td>
+              <td>Applied after final acceptance</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>DRN-PKG-001</td>
+              <td>Protective packaging kit</td>
+              <td>Packaging</td>
+              <td>1 set</td>
+              <td>Packaged</td>
+              <td>Buy</td>
+              <td>Box, foam inserts, manuals, and accessories bag</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>DRN-DOC-001</td>
+              <td>Inspection and test record</td>
+              <td>Quality</td>
+              <td>1 each</td>
+              <td>QA Test</td>
+              <td>Make</td>
+              <td>Traceability record from QA release</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+  </body>
+</html>

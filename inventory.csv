@@ -1,0 +1,15 @@
+area,location,item,part_number,on_hand,allocated,available,min,max,status,control_note
+Parts,Kitting,Carbon fiber main frame kit,DRN-FRM-001,12 set,1 set,11 set,5,20,Ready,Keep frames in matched hardware lots
+Parts,Kitting,Carbon fiber arm set,DRN-ARM-001,12 set,1 set,11 set,5,20,Ready,Pull as complete quadcopter set
+Parts,Kitting,Brushless motor set,DRN-MTR-001,48 each,4 each,44 each,20,80,Ready,Maintain clockwise and counterclockwise balance
+Parts,Electronics,Electronic speed controller,DRN-ESC-001,40 each,4 each,36 each,20,80,Ready,Lot trace ESCs used on each drone
+Parts,Electronics,Flight controller with IMU,DRN-FC-001,10 each,1 each,9 each,4,16,Ready,Serialized control item
+Parts,Electronics,Lithium polymer flight battery,DRN-BAT-001,8 each,1 each,7 each,6,18,Watch,Store in battery-safe area and check charge cycle count
+Parts,Motor Test,Propeller clockwise/counterclockwise set,DRN-PROP-001,18 set,1 set,17 set,8,30,Ready,Install only after motor direction test passes
+Parts,Packaged,Protective packaging kit,DRN-PKG-001,9 set,1 set,8 set,8,25,Reorder,Below preferred stock after current build allocation
+Production,Airframe,Drone assembly WIP,DRN-WIP-AIR,1 each,1 each,0 each,0,3,In process,Unit is active only while mechanical build is open
+Production,Electronics,Drone assembly WIP,DRN-WIP-ELEC,0 each,0 each,0 each,0,3,Open capacity,Receives unit after Airframe quality gate passes
+Production,Firmware,Configured drone WIP,DRN-WIP-FW,0 each,0 each,0 each,0,2,Open capacity,Hold firmware version and serial number together
+Production,QA Test,Inspection WIP,DRN-WIP-QA,0 each,0 each,0 each,0,2,Open capacity,QA WIP cannot release without completed test record
+Production,Rework,Rework hold,DRN-WIP-RWK,0 each,0 each,0 each,0,2,Clear,Use only for failed inspection or blocked material disposition
+Finished Goods,FG Inventory,Packaged inspection drone,DRN-FG-600,3 each,1 each,2 each,2,12,Ready,Available only after package scan and storage location assignment

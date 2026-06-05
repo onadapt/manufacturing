@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Drone Manufacturing Floor Map</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="details-hidden">
+    <main class="app-shell">
+      <section class="map-panel" aria-label="Drone manufacturing floor map">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Drone production floor</p>
+            <h1>Drone Manufacturing Floor Map</h1>
+          </div>
+          <div class="controls" aria-label="Map controls">
+            <a class="nav-link" href="production-orders.html">Orders</a>
+            <a class="nav-link" href="production-plan.html">Plan</a>
+            <a class="nav-link" href="inventory.html">Inventory</a>
+            <a class="nav-link" href="bom.html">BOM</a>
+            <button id="detailsToggle" class="nav-link" type="button" aria-controls="detailPanel" aria-expanded="false">
+              Show Details
+            </button>
+            <div class="segmented" role="group" aria-label="Map view">
+              <button class="active" type="button" data-view="process">Process</button>
+              <button type="button" data-view="material">Material</button>
+              <button type="button" data-view="rework">Rework</button>
+            </div>
+            <label class="toggle">
+              <input id="routeToggle" type="checkbox" checked />
+              <span>Routes</span>
+            </label>
+          </div>
+        </header>
+
+        <section class="floor-dashboard-strip" aria-label="Production dashboard summary">
+          <div>
+            <span>Active Order</span>
+            <strong id="dashboardOrder">DRN-PO-1005</strong>
+          </div>
+          <div>
+            <span>Production Status</span>
+            <strong id="dashboardStatus">In Progress</strong>
+          </div>
+          <div>
+            <span>Current Station</span>
+            <strong id="dashboardStation">Receiving</strong>
+          </div>
+          <div>
+            <span>Progress</span>
+            <strong id="dashboardProgress">0%</strong>
+          </div>
+          <div>
+            <span>Time Utilization</span>
+            <strong id="dashboardUtilization">0%</strong>
+          </div>
+        </section>
+
+        <div class="floor-wrap">
+          <svg class="floor-map" viewBox="0 0 1200 720" role="img" aria-labelledby="mapTitle mapDesc">
+            <title id="mapTitle">Drone manufacturing process floor map</title>
+            <desc id="mapDesc">
+              Clean pastel process boxes show drone manufacturing from kitting through packaging.
+            </desc>
+
+            <defs>
+              <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+                <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#dde3dc" stroke-width="1" />
+              </pattern>
+              <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+                <path d="M 2 2 L 10 6 L 2 10 z" fill="#2b6c60" />
+              </marker>
+              <marker id="reworkArrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+                <path d="M 2 2 L 10 6 L 2 10 z" fill="#6f8f88" />
+              </marker>
+            </defs>
+
+            <rect class="building" x="28" y="28" width="1144" height="664" rx="10" />
+            <rect class="grid" x="52" y="52" width="1096" height="616" rx="6" />
+
+            <g class="route-layer">
+              <path class="route main-route" d="M 260 205 H 1065 V 455 H 260" />
+              <path class="route rework-route" d="M 565 515 V 604 H 175 V 260" />
+            </g>
+
+            <g class="zone zone-receiving active" data-zone="receiving" tabindex="0" role="button" aria-label="Receiving intake">
+              <rect class="zone-footprint" x="90" y="150" width="170" height="110" rx="6" />
+              <text class="box-label" x="175" y="188">Receiving</text>
+              <text class="box-subtitle" x="175" y="214">Inbound parts</text>
+              <text class="box-metric" x="175" y="236" data-zone-metric="receiving">WIP 0 | Done 0</text>
+            </g>
+
+            <g class="zone zone-raw" data-zone="raw" tabindex="0" role="button" aria-label="Drone component kitting warehouse">
+              <rect class="zone-footprint" x="285" y="150" width="170" height="110" rx="6" />
+              <text class="box-label" x="370" y="188">Kitting</text>
+              <text class="box-subtitle" x="370" y="214">Components</text>
+              <text class="box-metric" x="370" y="236" data-zone-metric="raw">WIP 0 | Done 0</text>
+            </g>
+
+            <g class="zone zone-ws1" data-zone="ws1" tabindex="0" role="button" aria-label="Airframe and motor assembly workstation">
+              <rect class="zone-footprint" x="480" y="150" width="170" height="110" rx="6" />
+              <text class="box-label" x="565" y="188">Airframe</text>
+              <text class="box-subtitle" x="565" y="214">Motors + arms</text>
+              <text class="box-metric" x="565" y="236" data-zone-metric="ws1">WIP 0 | Done 0</text>
+            </g>
+
+            <g class="zone zone-ws2" data-zone="ws2" tabindex="0" role="button" aria-label="Electronics and power integration workstation">
+              <rect class="zone-footprint" x="675" y="150" width="175" height="110" rx="6" />
+              <text class="box-label" x="762.5" y="188">Electronics</text>
+              <text class="box-subtitle" x="762.5" y="214">ESC, FC, power</text>
+              <text class="box-metric" x="762.5" y="236" data-zone-metric="ws2">WIP 0 | Done 0</text>
+            </g>
+
+            <g class="zone zone-ws3" data-zone="ws3" tabindex="0" role="button" aria-label="Firmware and calibration workstation">
+              <rect class="zone-footprint" x="875" y="150" width="180" height="110" rx="6" />
+              <text class="box-label" x="965" y="188">Firmware</text>
+              <text class="box-subtitle" x="965" y="214">Calibrate + bind</text>
+              <text class="box-metric" x="965" y="236" data-zone-metric="ws3">WIP 0 | Done 0</text>
+            </g>
+
+            <g class="zone zone-ws4" data-zone="ws4" tabindex="0" role="button" aria-label="Motor and ESC test plus propeller install workstation">
+              <rect class="zone-footprint" x="875" y="400" width="180" height="110" rx="6" />
+              <text class="box-label" x="965" y="438">Motor Test</text>
+              <text class="box-subtitle" x="965" y="464">ESC + props</text>
+              <text class="box-metric" x="965" y="486" data-zone-metric="ws4">WIP 0 | Done 0</text>
+            </g>
+
+            <g class="zone zone-ws5" data-zone="ws5" tabindex="0" role="button" aria-label="Final quality assurance and flight test workstation">
+              <rect class="zone-footprint" x="675" y="400" width="175" height="110" rx="6" />
+              <text class="box-label" x="762.5" y="438">QA Test</text>
+              <text class="box-subtitle" x="762.5" y="464">Flight + sensors</text>
+              <text class="box-metric" x="762.5" y="486" data-zone-metric="ws5">WIP 0 | Done 0</text>
+            </g>
+
+            <g class="zone zone-fg" data-zone="fg" tabindex="0" role="button" aria-label="Packaged drone finished goods warehouse">
+              <rect class="zone-footprint" x="480" y="400" width="170" height="110" rx="6" />
+              <text class="box-label" x="565" y="438">Packaged</text>
+              <text class="box-subtitle" x="565" y="464">Finished goods</text>
+              <text class="box-metric" x="565" y="486" data-zone-metric="fg">WIP 0 | Done 0</text>
+            </g>
+
+            <g class="zone zone-inventory" data-zone="inventory" tabindex="0" role="button" aria-label="Finished goods inventory">
+              <rect class="zone-footprint" x="90" y="400" width="170" height="110" rx="6" />
+              <text class="box-label" x="175" y="438">FG Inventory</text>
+              <text class="box-subtitle" x="175" y="464">Ready stock</text>
+              <text class="box-metric" x="175" y="486" data-zone-metric="inventory">WIP 0 | Done 0</text>
+            </g>
+
+            <text class="rework-label" x="370" y="630">Rework return path</text>
+          </svg>
+        </div>
+      </section>
+
+      <aside id="detailPanel" class="detail-panel" aria-live="polite" hidden>
+        <p class="eyebrow">Selected zone</p>
+        <h2 id="zoneName">Receiving</h2>
+        <p id="zoneDescription">
+          Receives supplier deliveries, verifies incoming drone components, and releases accepted parts into kitting.
+        </p>
+        <dl class="metrics">
+          <div>
+            <dt>Area</dt>
+            <dd id="zoneArea">1,800 sq ft</dd>
+          </div>
+          <div>
+            <dt>Primary flow</dt>
+            <dd id="zoneFlow">Receiving to Kitting</dd>
+          </div>
+          <div>
+            <dt>Status</dt>
+            <dd id="zoneStatus">Open</dd>
+          </div>
+        </dl>
+        <div class="sequence" aria-label="Drone manufacturing sequence">
+          <span class="current" data-step="receiving">Receiving</span>
+          <span data-step="raw">Kitting</span>
+          <span data-step="ws1">Airframe</span>
+          <span data-step="ws2">Electronics</span>
+          <span data-step="ws3">Firmware</span>
+          <span data-step="ws4">Motor Test</span>
+          <span data-step="ws5">QA Test</span>
+          <span data-step="fg">Pack</span>
+          <span data-step="inventory">FG Inventory</span>
+        </div>
+      </aside>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

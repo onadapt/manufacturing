@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Drone Production Orders</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="bom-shell">
+      <header class="bom-header">
+        <div>
+          <p class="eyebrow">Drone production</p>
+          <h1>Production Orders</h1>
+          <p class="bom-intro">
+            Create and track drone production orders from raw material release through workstation WIP, activity,
+            finished goods completion, and inventory balance updates.
+          </p>
+        </div>
+        <div class="bom-actions">
+          <a class="nav-link" href="index.html">Floor</a>
+          <a class="nav-link" href="inventory.html">Inventory</a>
+          <a class="nav-link" href="production-plan.html">Plan</a>
+          <a class="nav-link" href="bom.html">BOM</a>
+        </div>
+      </header>
+
+      <section class="order-create" aria-label="Create production order">
+        <div>
+          <h2>Create Production Order</h2>
+          <form id="orderForm" class="order-form">
+            <label>
+              <span>Order No.</span>
+              <input id="orderNo" type="text" value="DRN-PO-1003" readonly />
+            </label>
+            <label>
+              <span>Finished Good</span>
+              <input id="finishedGood" type="text" value="DRN-FG-600" readonly />
+            </label>
+            <label>
+              <span>Quantity</span>
+              <input id="quantity" type="number" value="1" min="1" />
+            </label>
+            <label>
+              <span>Start Date</span>
+              <input id="startDate" type="date" value="2026-06-04" />
+            </label>
+            <label>
+              <span>Due Date</span>
+              <input id="dueDate" type="date" value="2026-06-14" />
+            </label>
+            <button type="submit">Create Order</button>
+          </form>
+          <p id="orderMessage" class="form-message" role="status"></p>
+        </div>
+        <div class="sql-card">
+          <span>PostgreSQL function</span>
+          <code id="sqlPreview">SELECT create_production_order('DRN-PO-1003', 1, '2026-06-14', '2026-06-04');</code>
+        </div>
+      </section>
+
+      <section class="bom-summary production-summary order-summary" aria-label="Production order summary">
+        <div>
+          <span>Active order</span>
+          <strong id="activeOrder">DRN-PO-1001</strong>
+        </div>
+        <div>
+          <span>Status</span>
+          <strong id="orderStatus">Planned</strong>
+        </div>
+        <div>
+          <span>Build qty</span>
+          <strong id="buildQty">1 each</strong>
+        </div>
+        <div>
+          <span>Current balance</span>
+          <strong id="currentBalance">Receiving</strong>
+        </div>
+        <div>
+          <span>Time utilization</span>
+          <strong id="timeUtilization">0%</strong>
+        </div>
+      </section>
+
+      <section class="bom-table-wrap" aria-label="Production order history">
+        <table class="bom-table order-history-table">
+          <thead>
+            <tr>
+              <th>Order No.</th>
+              <th>Status</th>
+              <th>Current Station</th>
+              <th>Progress</th>
+              <th>Qty</th>
+              <th>Created</th>
+              <th>Due</th>
+            </tr>
+          </thead>
+          <tbody id="historyBody">
+          </tbody>
+        </table>
+      </section>
+
+      <section class="bom-table-wrap" aria-label="Station balances">
+        <table class="bom-table orders-table">
+          <thead>
+            <tr>
+              <th>Seq</th>
+              <th>Station</th>
+              <th>WIP</th>
+              <th>Completed</th>
+              <th>Hold</th>
+              <th>Operation Status</th>
+              <th>Balance Logic</th>
+            </tr>
+          </thead>
+          <tbody id="balancesBody">
+          </tbody>
+        </table>
+      </section>
+
+      <section class="bom-table-wrap" aria-label="Production order material requirements">
+        <table class="bom-table order-materials-table">
+          <thead>
+            <tr>
+              <th>Part Number</th>
+              <th>Description</th>
+              <th>Required</th>
+              <th>Issued</th>
+              <th>Consumed</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="materialsBody">
+          </tbody>
+        </table>
+      </section>
+
+      <section class="plan-band" aria-label="Production order activity">
+        <h2>Activity Ledger</h2>
+        <div id="activityList" class="activity-list">
+        </div>
+      </section>
+
+      <section class="bom-table-wrap" aria-label="Production transaction ledger">
+        <table class="bom-table transaction-ledger-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Station</th>
+              <th>Type</th>
+              <th>Qty In</th>
+              <th>Qty Out</th>
+              <th>Adjust</th>
+              <th>Balance</th>
+              <th>Event</th>
+              <th>Reference</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody id="ledgerBody">
+          </tbody>
+        </table>
+      </section>
+    </main>
+    <script src="production-orders.js"></script>
+  </body>
+</html>

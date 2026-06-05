@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Drone Inventory Plan</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="bom-shell">
+      <header class="bom-header">
+        <div>
+          <p class="eyebrow">Drone production</p>
+          <h1>Inventory Plan</h1>
+          <p class="bom-intro">
+            Inventory view for drone parts, production WIP, and finished goods areas. This defines what each area
+            controls, where material sits, and what should trigger replenishment or review.
+          </p>
+        </div>
+        <div class="bom-actions">
+          <a class="nav-link" href="index.html">Floor</a>
+          <a class="nav-link" href="production-orders.html">Orders</a>
+          <a class="nav-link" href="production-plan.html">Plan</a>
+          <a class="nav-link" href="bom.html">BOM</a>
+          <a class="nav-link" href="inventory.csv">CSV</a>
+        </div>
+      </header>
+
+      <section class="bom-summary production-summary" aria-label="Inventory summary">
+        <div>
+          <span>Parts inventory</span>
+          <strong>17 SKUs</strong>
+        </div>
+        <div>
+          <span>WIP Balances</span>
+          <strong>8 locations</strong>
+        </div>
+        <div>
+          <span>FG inventory</span>
+          <strong>1 finished SKU</strong>
+        </div>
+        <div>
+          <span>Primary control</span>
+          <strong>Min / max</strong>
+        </div>
+      </section>
+
+      <section class="plan-band" aria-label="Inventory area definitions">
+        <h2>Inventory Areas</h2>
+        <div class="plan-cards">
+          <article>
+            <span>Parts</span>
+            <strong>Receiving + Kitting</strong>
+            <p>Raw components are received, inspected, stored, and pulled into complete kits before work starts.</p>
+          </article>
+          <article>
+            <span>Production</span>
+            <strong>Station WIP</strong>
+            <p>Partially built drones move through Airframe, Electronics, Firmware, Motor Test, QA, and Packaged.</p>
+          </article>
+          <article>
+            <span>Finished goods</span>
+            <strong>FG Inventory</strong>
+            <p>Accepted packaged drones are stored as available stock after final scan and location assignment.</p>
+          </article>
+          <article>
+            <span>Rework</span>
+            <strong>Hold inventory</strong>
+            <p>Failed or blocked units are held outside normal flow until disposition, repair, and release are complete.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="bom-table-wrap" aria-label="Drone inventory table">
+        <table class="bom-table inventory-table">
+          <thead>
+            <tr>
+              <th>Area</th>
+              <th>Location</th>
+              <th>Item</th>
+              <th>Part Number</th>
+              <th>On Hand</th>
+              <th>Allocated</th>
+              <th>Available</th>
+              <th>Min</th>
+              <th>Max</th>
+              <th>Status</th>
+              <th>Control Note</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Parts</td>
+              <td>Kitting</td>
+              <td>Carbon fiber main frame kit</td>
+              <td>DRN-FRM-001</td>
+              <td>12 set</td>
+              <td>1 set</td>
+              <td>11 set</td>
+              <td>5</td>
+              <td>20</td>
+              <td>Ready</td>
+              <td>Keep frames in matched hardware lots.</td>
+            </tr>
+            <tr>
+              <td>Parts</td>
+              <td>Kitting</td>
+              <td>Carbon fiber arm set</td>
+              <td>DRN-ARM-001</td>
+              <td>12 set</td>
+              <td>1 set</td>
+              <td>11 set</td>
+              <td>5</td>
+              <td>20</td>
+              <td>Ready</td>
+              <td>Pull as complete quadcopter set.</td>
+            </tr>
+            <tr>
+              <td>Parts</td>
+              <td>Kitting</td>
+              <td>Brushless motor set</td>
+              <td>DRN-MTR-001</td>
+              <td>48 each</td>
+              <td>4 each</td>
+              <td>44 each</td>
+              <td>20</td>
+              <td>80</td>
+              <td>Ready</td>
+              <td>Maintain clockwise and counterclockwise balance.</td>
+            </tr>
+            <tr>
+              <td>Parts</td>
+              <td>Electronics</td>
+              <td>Electronic speed controller</td>
+              <td>DRN-ESC-001</td>
+              <td>40 each</td>
+              <td>4 each</td>
+              <td>36 each</td>
+              <td>20</td>
+              <td>80</td>
+              <td>Ready</td>
+              <td>Lot trace ESCs used on each drone.</td>
+            </tr>
+            <tr>
+              <td>Parts</td>
+              <td>Electronics</td>
+              <td>Flight controller with IMU</td>
+              <td>DRN-FC-001</td>
+              <td>10 each</td>
+              <td>1 each</td>
+              <td>9 each</td>
+              <td>4</td>
+              <td>16</td>
+              <td>Ready</td>
+              <td>Serialized control item.</td>
+            </tr>
+            <tr>
+              <td>Parts</td>
+              <td>Electronics</td>
+              <td>Lithium polymer flight battery</td>
+              <td>DRN-BAT-001</td>
+              <td>8 each</td>
+              <td>1 each</td>
+              <td>7 each</td>
+              <td>6</td>
+              <td>18</td>
+              <td>Watch</td>
+              <td>Store in battery-safe area and check charge cycle count.</td>
+            </tr>
+            <tr>
+              <td>Parts</td>
+              <td>Motor Test</td>
+              <td>Propeller clockwise/counterclockwise set</td>
+              <td>DRN-PROP-001</td>
+              <td>18 set</td>
+              <td>1 set</td>
+              <td>17 set</td>
+              <td>8</td>
+              <td>30</td>
+              <td>Ready</td>
+              <td>Install only after motor direction test passes.</td>
+            </tr>
+            <tr>
+              <td>Parts</td>
+              <td>Packaged</td>
+              <td>Protective packaging kit</td>
+              <td>DRN-PKG-001</td>
+              <td>9 set</td>
+              <td>1 set</td>
+              <td>8 set</td>
+              <td>8</td>
+              <td>25</td>
+              <td>Reorder</td>
+              <td>Below preferred stock after current build allocation.</td>
+            </tr>
+            <tr>
+              <td>Production</td>
+              <td>Airframe</td>
+              <td>Drone assembly WIP</td>
+              <td>DRN-WIP-AIR</td>
+              <td>1 each</td>
+              <td>1 each</td>
+              <td>0 each</td>
+              <td>0</td>
+              <td>3</td>
+              <td>In process</td>
+              <td>Unit is active only while mechanical build is open.</td>
+            </tr>
+            <tr>
+              <td>Production</td>
+              <td>Electronics</td>
+              <td>Drone assembly WIP</td>
+              <td>DRN-WIP-ELEC</td>
+              <td>0 each</td>
+              <td>0 each</td>
+              <td>0 each</td>
+              <td>0</td>
+              <td>3</td>
+              <td>Open capacity</td>
+              <td>Receives unit after Airframe quality gate passes.</td>
+            </tr>
+            <tr>
+              <td>Production</td>
+              <td>Firmware</td>
+              <td>Configured drone WIP</td>
+              <td>DRN-WIP-FW</td>
+              <td>0 each</td>
+              <td>0 each</td>
+              <td>0 each</td>
+              <td>0</td>
+              <td>2</td>
+              <td>Open capacity</td>
+              <td>Hold firmware version and serial number together.</td>
+            </tr>
+            <tr>
+              <td>Production</td>
+              <td>QA Test</td>
+              <td>Inspection WIP</td>
+              <td>DRN-WIP-QA</td>
+              <td>0 each</td>
+              <td>0 each</td>
+              <td>0 each</td>
+              <td>0</td>
+              <td>2</td>
+              <td>Open capacity</td>
+              <td>QA WIP cannot release without completed test record.</td>
+            </tr>
+            <tr>
+              <td>Production</td>
+              <td>Rework</td>
+              <td>Rework hold</td>
+              <td>DRN-WIP-RWK</td>
+              <td>0 each</td>
+              <td>0 each</td>
+              <td>0 each</td>
+              <td>0</td>
+              <td>2</td>
+              <td>Clear</td>
+              <td>Use only for failed inspection or blocked material disposition.</td>
+            </tr>
+            <tr>
+              <td>Finished Goods</td>
+              <td>FG Inventory</td>
+              <td>Packaged inspection drone</td>
+              <td>DRN-FG-600</td>
+              <td>3 each</td>
+              <td>1 each</td>
+              <td>2 each</td>
+              <td>2</td>
+              <td>12</td>
+              <td>Ready</td>
+              <td>Available only after package scan and storage location assignment.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+  </body>
+</html>

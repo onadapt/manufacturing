@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Drone Production Plan</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="bom-shell">
+      <header class="bom-header">
+        <div>
+          <p class="eyebrow">Drone production</p>
+          <h1>Production Plan</h1>
+          <p class="bom-intro">
+            Prototype build plan for one packaged inspection drone, aligned to the floor stations, BOM, labor,
+            material pull, work script, quality gates, and support needs.
+          </p>
+        </div>
+        <div class="bom-actions">
+          <a class="nav-link" href="index.html">Floor</a>
+          <a class="nav-link" href="production-orders.html">Orders</a>
+          <a class="nav-link" href="inventory.html">Inventory</a>
+          <a class="nav-link" href="bom.html">BOM</a>
+          <a class="nav-link" href="production-plan.csv">CSV</a>
+        </div>
+      </header>
+
+      <section class="bom-summary production-summary" aria-label="Production plan summary">
+        <div>
+          <span>Build target</span>
+          <strong>1 prototype drone</strong>
+        </div>
+        <div>
+          <span>Total direct labor</span>
+          <strong>198 min</strong>
+        </div>
+        <div>
+          <span>Required flow</span>
+          <strong>9 stations</strong>
+        </div>
+        <div>
+          <span>Primary crew</span>
+          <strong>5 roles</strong>
+        </div>
+      </section>
+
+      <section class="plan-band" aria-label="Planning assumptions">
+        <h2>Planning Assumptions</h2>
+        <div class="plan-cards">
+          <article>
+            <span>Lot size</span>
+            <strong>1 drone prototype</strong>
+            <p>Scale by multiplying labor and material pull quantities by the planned build quantity.</p>
+          </article>
+          <article>
+            <span>Material control</span>
+            <strong>Kit before build</strong>
+            <p>All serialized and safety-sensitive parts are staged before Airframe starts.</p>
+          </article>
+          <article>
+            <span>Quality model</span>
+            <strong>Gate by station</strong>
+            <p>Each station releases only accepted work to the next operation.</p>
+          </article>
+          <article>
+            <span>Rework path</span>
+            <strong>Controlled return</strong>
+            <p>Failed QA or test items route through Rework before returning to Kitting or the failed station.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="bom-table-wrap" aria-label="Drone production routing table">
+        <table class="bom-table production-table">
+          <thead>
+            <tr>
+              <th>Seq</th>
+              <th>Station</th>
+              <th>Operation Type</th>
+              <th>Labor</th>
+              <th>Primary Role</th>
+              <th>Material Pull</th>
+              <th>Work Script</th>
+              <th>Quality Gate</th>
+              <th>Tools / Support</th>
+              <th>Output</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>10</td>
+              <td>Receiving</td>
+              <td>Logistics</td>
+              <td>8 min</td>
+              <td>Material handler</td>
+              <td>Supplier cartons, packing list, purchase order</td>
+              <td>Receive cartons, inspect for damage, confirm part numbers, flag shortages, release accepted parts.</td>
+              <td>Parts match PO and no damage is visible.</td>
+              <td>Receiving bench, barcode scanner, quarantine bin</td>
+              <td>Accepted parts available for kitting</td>
+            </tr>
+            <tr>
+              <td>20</td>
+              <td>Kitting</td>
+              <td>Material prep</td>
+              <td>12 min</td>
+              <td>Material handler</td>
+              <td>Frame, arms, motors, ESCs, power, controls, sensors, packaging</td>
+              <td>Pull BOM items, verify quantities, group by station, attach traveler, stage kit at Airframe.</td>
+              <td>Kit checklist complete with no missing critical parts.</td>
+              <td>Kit cart, labeled bins, BOM traveler</td>
+              <td>Complete drone build kit</td>
+            </tr>
+            <tr>
+              <td>30</td>
+              <td>Airframe</td>
+              <td>Assembly</td>
+              <td>35 min</td>
+              <td>Mechanical assembler</td>
+              <td>Frame kit, arm set, fasteners, motors, thread-lock</td>
+              <td>Build frame, install arms, mount motors, route motor leads, torque fasteners, mark completed joints.</td>
+              <td>Frame square, motors secure, torque marks present.</td>
+              <td>Torque driver, fixture, thread-lock, ESD mat</td>
+              <td>Mechanical drone frame with motors</td>
+            </tr>
+            <tr>
+              <td>40</td>
+              <td>Electronics</td>
+              <td>Assembly</td>
+              <td>48 min</td>
+              <td>Electrical assembler</td>
+              <td>ESCs, PDB, battery lead, flight controller, receiver, GPS, camera, wiring</td>
+              <td>Install ESCs and power board, mount flight controller, connect receiver, GPS, payload, and harnesses.</td>
+              <td>Polarity verified, harness secured, no exposed conductors.</td>
+              <td>Soldering station, multimeter, ESD controls, cable ties</td>
+              <td>Electrically assembled drone</td>
+            </tr>
+            <tr>
+              <td>50</td>
+              <td>Firmware</td>
+              <td>Configuration</td>
+              <td>22 min</td>
+              <td>Test technician</td>
+              <td>Firmware image, configuration profile, serial record</td>
+              <td>Flash firmware, set frame orientation, bind receiver, calibrate accelerometer, compass, and radio endpoints.</td>
+              <td>Firmware version and calibration results recorded.</td>
+              <td>Configuration laptop, USB cable, radio transmitter</td>
+              <td>Configured drone ready for motor test</td>
+            </tr>
+            <tr>
+              <td>60</td>
+              <td>Motor Test</td>
+              <td>Test</td>
+              <td>18 min</td>
+              <td>Test technician</td>
+              <td>Propeller set, battery, test record</td>
+              <td>Test motor direction without props, verify throttle response, install matched props after pass.</td>
+              <td>All motors spin correct direction and current draw is within limit.</td>
+              <td>Guarded test stand, battery checker, prop tool</td>
+              <td>Prop-equipped drone cleared for QA</td>
+            </tr>
+            <tr>
+              <td>70</td>
+              <td>QA Test</td>
+              <td>Inspection</td>
+              <td>35 min</td>
+              <td>Quality technician</td>
+              <td>Inspection and test record, charged battery</td>
+              <td>Run visual inspection, sensor check, communications check, hover or cage flight test, document results.</td>
+              <td>Flight, sensors, radio, camera, labels, and serial record accepted.</td>
+              <td>Flight cage, inspection checklist, scale, laptop</td>
+              <td>Accepted finished drone</td>
+            </tr>
+            <tr>
+              <td>80</td>
+              <td>Packaged</td>
+              <td>Finished goods</td>
+              <td>14 min</td>
+              <td>Packaging operator</td>
+              <td>Packaging kit, labels, manuals, accessories bag</td>
+              <td>Apply labels, place drone and accessories in protective packaging, add documentation, seal carton.</td>
+              <td>Carton label, serial number, and paperwork match QA record.</td>
+              <td>Label printer, scale, packaging bench</td>
+              <td>Packaged finished drone</td>
+            </tr>
+            <tr>
+              <td>90</td>
+              <td>FG Inventory</td>
+              <td>Logistics</td>
+              <td>6 min</td>
+              <td>Inventory clerk</td>
+              <td>Packaged drone, finished goods traveler</td>
+              <td>Scan finished good, assign storage location, update available stock, stage for allocation.</td>
+              <td>Inventory transaction complete and location assigned.</td>
+              <td>Barcode scanner, inventory rack, ERP transaction</td>
+              <td>Available finished goods inventory</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="plan-band" aria-label="Production support needs">
+        <h2>Other Stuff To Define</h2>
+        <div class="plan-cards">
+          <article>
+            <span>Labor standard</span>
+            <strong>Direct + support</strong>
+            <p>Track direct labor by station and add indirect time for material handling, QA review, and rework disposition.</p>
+          </article>
+          <article>
+            <span>Material release</span>
+            <strong>Shortage visible</strong>
+            <p>Before a build starts, the kit should show available, short, substituted, and serialized parts.</p>
+          </article>
+          <article>
+            <span>Standard script</span>
+            <strong>Operator prompts</strong>
+            <p>Each station needs a script with setup, action steps, hold points, pass/fail checks, and signoff.</p>
+          </article>
+          <article>
+            <span>Production records</span>
+            <strong>Traceable build</strong>
+            <p>Capture serial number, firmware version, inspection results, rework history, and final inventory location.</p>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
