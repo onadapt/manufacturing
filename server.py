@@ -2791,6 +2791,25 @@ def fetch_trial_balance() -> dict:
                     else "Missing immutability trigger(s)",
                 ),
             ]
+            cur.execute("SELECT to_regclass('purchase_orders') AS reg")
+            if cur.fetchone()["reg"] is not None:
+                cur.execute(
+                    """
+                    SELECT COALESCE(SUM(l.quantity * l.unit_price), 0) AS total
+                    FROM purchase_order_lines l
+                    JOIN purchase_orders p ON p.id = l.purchase_order_id
+                    WHERE p.status = 'received'
+                    """
+                )
+                received_total = round(float(cur.fetchone()["total"]), 2)
+                ap_gl = gl_balance(balances, AP_ACCOUNT)
+                controls.append(
+                    control(
+                        "Accounts Payable ties to received vendor POs",
+                        abs(ap_gl - received_total) <= 0.01,
+                        f"GL {ap_gl:,.2f} vs received PO total {received_total:,.2f}",
+                    )
+                )
     return {
         "accounts": balances,
         "total_debit": total_debit,
@@ -2928,10 +2947,11 @@ def set_costing_standard(payload: dict) -> dict:
 AR_ACCOUNT = "1200"
 SALES_ACCOUNT = "4000"
 COGS_ACCOUNT = "5010"
+AP_ACCOUNT = "2000"
 PROTECTED_GL_ACCOUNTS = {
     RM_ACCOUNT, SUBASSY_ACCOUNT, WIP_ACCOUNT, FG_ACCOUNT,
     PAYROLL_ACCOUNT, OH_ACCOUNT, OPENING_ACCOUNT,
-    AR_ACCOUNT, SALES_ACCOUNT, COGS_ACCOUNT,
+    AR_ACCOUNT, SALES_ACCOUNT, COGS_ACCOUNT, AP_ACCOUNT,
     "5210", "5220", "5230", "5240", "5250", "5260",
 }
 GL_ACCOUNT_TYPES = ("asset", "liability", "equity", "income", "expense", "variance")
@@ -3357,6 +3377,521 @@ def ship_and_invoice(payload: dict) -> dict:
         "subtotal": subtotal,
         "cogs": cogs_total,
         "margin": round(subtotal - cogs_total, 2),
+    }
+
+
+# ===== Purchasing: vendors, sourcing catalog, EOQ planning, vendor POs =====
+# Procure-to-pay on the same books: the sourcing catalog (real July 2026
+# street prices) drives PO line pricing through quantity breaks, receiving
+# fills the buy-part bins and posts DR Raw Materials / CR Accounts Payable,
+# and the pricing policy books each receipt price as the part's actual cost
+# (audited), which drives PPV at the next material issue.
+
+
+def _purchasing_ready(cur) -> None:
+    cur.execute("SELECT to_regclass('purchase_orders') AS reg")
+    if cur.fetchone()["reg"] is None:
+        raise ValueError("Purchasing tables are not installed yet.")
+
+
+def _price_at_qty(base_price: float, breaks: list[dict], quantity: int) -> float:
+    """Deepest quantity break the order qualifies for; base price otherwise."""
+    price = base_price
+    for row in sorted(breaks, key=lambda b: b["min_qty"]):
+        if quantity >= row["min_qty"]:
+            price = float(row["unit_price"])
+    return round(price, 2)
+
+
+def fetch_purchasing() -> dict:
+    with psycopg.connect(require_database_url(), row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            _purchasing_ready(cur)
+            cur.execute("SELECT * FROM purchasing_settings WHERE id = 1")
+            settings = cur.fetchone()
+
+            cur.execute(
+                """
+                SELECT v.id, v.name, v.contact, v.terms, v.lead_time_days,
+                       COUNT(po.id) AS po_count
+                FROM vendors v
+                LEFT JOIN purchase_orders po ON po.vendor_id = v.id
+                GROUP BY v.id, v.name, v.contact, v.terms, v.lead_time_days
+                ORDER BY v.name
+                """
+            )
+            vendors = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT vp.id, vp.vendor_id, v.name AS vendor, vp.part_number, vp.vendor_model,
+                       vp.description, vp.unit_price, vp.moq,
+                       COALESCE(vp.lead_time_days, v.lead_time_days) AS lead_time_days,
+                       vp.availability, vp.preferred
+                FROM vendor_parts vp
+                JOIN vendors v ON v.id = vp.vendor_id
+                ORDER BY vp.part_number, vp.preferred DESC, vp.unit_price
+                """
+            )
+            catalog = cur.fetchall()
+            cur.execute(
+                "SELECT vendor_part_id, min_qty, unit_price FROM vendor_price_breaks ORDER BY min_qty"
+            )
+            breaks_by_offer: dict[int, list] = {}
+            for row in cur.fetchall():
+                breaks_by_offer.setdefault(row["vendor_part_id"], []).append(
+                    {"min_qty": row["min_qty"], "unit_price": float(row["unit_price"])}
+                )
+            for offer in catalog:
+                offer["breaks"] = breaks_by_offer.get(offer["id"], [])
+
+            # Per-finished-drone usage of each buy part; the transport case is
+            # consumed 1:1 by the drone, so case buy parts roll in directly.
+            cur.execute(
+                """
+                SELECT b.part_number, MIN(b.description) AS description, MIN(b.unit) AS unit,
+                       SUM(b.quantity) AS per_unit
+                FROM bom_items b
+                WHERE b.supply_type = 'buy'
+                GROUP BY b.part_number
+                ORDER BY b.part_number
+                """
+            )
+            usage_rows = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT part_number,
+                       SUM(quantity_on_hand) AS on_hand,
+                       SUM(quantity_available) AS available,
+                       SUM(min_quantity) AS min_quantity,
+                       SUM(max_quantity) AS max_quantity
+                FROM inventory_items
+                GROUP BY part_number
+                """
+            )
+            bins = {row["part_number"]: row for row in cur.fetchall()}
+            cur.execute("SELECT part_number, standard_cost, actual_cost FROM standard_costs")
+            std_costs = {row["part_number"]: row for row in cur.fetchall()}
+
+            offers_by_part: dict[str, list] = {}
+            for offer in catalog:
+                offers_by_part.setdefault(offer["part_number"], []).append(offer)
+
+            ordering_cost = float(settings["ordering_cost"])
+            carrying_rate = float(settings["carrying_rate_pct"]) / 100.0
+            safety_days = int(settings["safety_stock_days"])
+            builds = int(settings["planned_annual_builds"])
+
+            parts = []
+            for row in usage_rows:
+                part = row["part_number"]
+                usage = float(row["per_unit"])
+                annual_demand = round(builds * usage)
+                bin_row = bins.get(part) or {}
+                on_hand = float(bin_row.get("on_hand") or 0)
+                available = float(bin_row.get("available") or 0)
+                min_q = float(bin_row.get("min_quantity") or 0)
+                max_q = float(bin_row.get("max_quantity") or 0)
+                offers = offers_by_part.get(part, [])
+                preferred = offers[0] if offers else None
+                std = std_costs.get(part)
+                base_price = (
+                    float(preferred["unit_price"]) if preferred
+                    else float(std["actual_cost"]) if std else 0.0
+                )
+                lead = int(preferred["lead_time_days"]) if preferred else 7
+                daily = annual_demand / 365.0
+                reorder_point = round(daily * (lead + safety_days), 1)
+                holding = carrying_rate * base_price
+                eoq = (
+                    math.ceil(math.sqrt(2 * annual_demand * ordering_cost / holding))
+                    if annual_demand > 0 and holding > 0
+                    else 0
+                )
+                trigger = max(min_q, reorder_point)
+                below = trigger > 0 and available <= trigger
+                suggested = 0
+                if below:
+                    quantity = eoq
+                    if max_q > 0:
+                        quantity = min(quantity, max(int(max_q - on_hand), 0))
+                    if preferred:
+                        quantity = max(quantity, int(preferred["moq"]))
+                    suggested = max(int(quantity), 1)
+                price_at_suggested = (
+                    _price_at_qty(base_price, preferred["breaks"], suggested or eoq or 1)
+                    if preferred else base_price
+                )
+                parts.append({
+                    "part_number": part,
+                    "description": row["description"],
+                    "unit": row["unit"],
+                    "usage_per_unit": usage,
+                    "annual_demand": annual_demand,
+                    "on_hand": on_hand,
+                    "available": available,
+                    "min_quantity": min_q,
+                    "max_quantity": max_q,
+                    "reorder_point": reorder_point,
+                    "eoq": eoq,
+                    "lead_time_days": lead,
+                    "below_reorder": below,
+                    "suggested_qty": suggested,
+                    "price_at_suggested": price_at_suggested,
+                    "order_value": round(price_at_suggested * suggested, 2),
+                    "vendor": preferred["vendor"] if preferred else None,
+                    "vendor_id": preferred["vendor_id"] if preferred else None,
+                    "vendor_model": preferred["vendor_model"] if preferred else None,
+                    "standard_cost": float(std["standard_cost"]) if std else None,
+                    "actual_cost": float(std["actual_cost"]) if std else None,
+                })
+
+            cur.execute(
+                """
+                SELECT po.id, po.po_no, po.status, po.created_at, po.received_at,
+                       v.name AS vendor
+                FROM purchase_orders po
+                JOIN vendors v ON v.id = po.vendor_id
+                ORDER BY po.id DESC
+                LIMIT 40
+                """
+            )
+            pos = cur.fetchall()
+            po_ids = [po["id"] for po in pos]
+            lines_by_po: dict[int, list] = {}
+            if po_ids:
+                cur.execute(
+                    """
+                    SELECT purchase_order_id, part_number, vendor_model, quantity, unit_price
+                    FROM purchase_order_lines
+                    WHERE purchase_order_id = ANY(%s)
+                    ORDER BY id
+                    """,
+                    (po_ids,),
+                )
+                for line in cur.fetchall():
+                    lines_by_po.setdefault(line["purchase_order_id"], []).append(line)
+            for po in pos:
+                lines = lines_by_po.get(po["id"], [])
+                po["lines"] = lines
+                po["total"] = round(sum(float(l["unit_price"]) * l["quantity"] for l in lines), 2)
+
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(l.credit), 0) AS credit, COALESCE(SUM(l.debit), 0) AS debit
+                FROM cost_lines l WHERE l.account_no = %s
+                """,
+                (AP_ACCOUNT,),
+            )
+            ap = cur.fetchone()
+            ap_balance = round(float(ap["credit"]) - float(ap["debit"]), 2)
+
+    return {
+        "settings": settings,
+        "vendors": vendors,
+        "catalog": catalog,
+        "parts": parts,
+        "pos": pos,
+        "ap_balance": ap_balance,
+        "below_count": sum(1 for p in parts if p["below_reorder"]),
+    }
+
+
+def manage_vendor(payload: dict) -> dict:
+    action = str(payload.get("action", "")).strip()
+    if action not in ("create", "update", "delete"):
+        raise ValueError("action must be create, update, or delete.")
+    vendor_id = payload.get("vendorId")
+    name = str(payload.get("name", "")).strip()
+    if action in ("create", "update") and (not name or len(name) > 120):
+        raise ValueError("Vendor name is required (max 120 chars).")
+    contact = str(payload.get("contact", "")).strip()
+    terms = str(payload.get("terms", "")).strip() or "Net 30"
+    lead_time = int(payload.get("leadTimeDays", 7) or 7)
+    if lead_time < 0:
+        raise ValueError("Lead time cannot be negative.")
+
+    with psycopg.connect(require_database_url(), row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            _purchasing_ready(cur)
+            if action == "create":
+                cur.execute(
+                    "INSERT INTO vendors (name, contact, terms, lead_time_days) VALUES (%s, %s, %s, %s) RETURNING id",
+                    (name, contact, terms, lead_time),
+                )
+                vendor_id = cur.fetchone()["id"]
+            elif action == "update":
+                cur.execute(
+                    "UPDATE vendors SET name = %s, contact = %s, terms = %s, lead_time_days = %s WHERE id = %s",
+                    (name, contact, terms, lead_time, vendor_id),
+                )
+                if cur.rowcount == 0:
+                    raise ValueError("Unknown vendor.")
+            else:
+                cur.execute("SELECT COUNT(*) AS n FROM purchase_orders WHERE vendor_id = %s", (vendor_id,))
+                if cur.fetchone()["n"]:
+                    raise ValueError("Vendors with purchase orders cannot be deleted.")
+                cur.execute("DELETE FROM vendors WHERE id = %s", (vendor_id,))
+                if cur.rowcount == 0:
+                    raise ValueError("Unknown vendor.")
+        conn.commit()
+    return {"action": action, "vendorId": vendor_id, "name": name}
+
+
+def set_purchasing_settings(payload: dict) -> dict:
+    ordering_cost = round(float(payload.get("orderingCost", 0)), 2)
+    carrying_rate = round(float(payload.get("carryingRatePct", 0)), 2)
+    safety_days = int(payload.get("safetyStockDays", 0))
+    builds = int(payload.get("plannedAnnualBuilds", 0))
+    if ordering_cost <= 0:
+        raise ValueError("Ordering cost must be greater than zero.")
+    if carrying_rate <= 0 or carrying_rate > 100:
+        raise ValueError("Carrying rate must be between 0 and 100 percent.")
+    if safety_days < 0:
+        raise ValueError("Safety stock days cannot be negative.")
+    if builds <= 0:
+        raise ValueError("Planned annual builds must be greater than zero.")
+    with psycopg.connect(require_database_url(), row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            _purchasing_ready(cur)
+            cur.execute(
+                """
+                UPDATE purchasing_settings
+                SET ordering_cost = %s, carrying_rate_pct = %s, safety_stock_days = %s,
+                    planned_annual_builds = %s, updated_at = now()
+                WHERE id = 1
+                """,
+                (ordering_cost, carrying_rate, safety_days, builds),
+            )
+        conn.commit()
+    return {
+        "orderingCost": ordering_cost,
+        "carryingRatePct": carrying_rate,
+        "safetyStockDays": safety_days,
+        "plannedAnnualBuilds": builds,
+    }
+
+
+def set_part_min_max(payload: dict) -> dict:
+    part = str(payload.get("partNumber", "")).strip()
+    min_q = float(payload.get("minQuantity", 0))
+    max_q = float(payload.get("maxQuantity", 0))
+    if not part:
+        raise ValueError("partNumber is required.")
+    if min_q < 0 or max_q < 0:
+        raise ValueError("Min and max cannot be negative.")
+    if max_q > 0 and max_q < min_q:
+        raise ValueError("Max must be at least the min (or zero for no cap).")
+    with psycopg.connect(require_database_url(), row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE inventory_items
+                SET min_quantity = %s, max_quantity = %s, updated_at = now()
+                WHERE part_number = %s
+                """,
+                (min_q, max_q, part),
+            )
+            if cur.rowcount == 0:
+                raise ValueError(f"No inventory bins found for {part}.")
+        conn.commit()
+    return {"partNumber": part, "minQuantity": min_q, "maxQuantity": max_q}
+
+
+def set_preferred_offer(payload: dict) -> dict:
+    offer_id = int(payload.get("vendorPartId", 0))
+    with psycopg.connect(require_database_url(), row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            _purchasing_ready(cur)
+            cur.execute("SELECT part_number FROM vendor_parts WHERE id = %s", (offer_id,))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("Unknown catalog offer.")
+            cur.execute(
+                "UPDATE vendor_parts SET preferred = (id = %s) WHERE part_number = %s",
+                (offer_id, row["part_number"]),
+            )
+        conn.commit()
+    return {"vendorPartId": offer_id, "partNumber": row["part_number"]}
+
+
+def create_vendor_po(payload: dict) -> dict:
+    vendor_id = payload.get("vendorId")
+    lines = payload.get("lines") or []
+    if not lines:
+        raise ValueError("A purchase order needs at least one line.")
+
+    with psycopg.connect(require_database_url(), row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            _purchasing_ready(cur)
+            cur.execute("SELECT id, name FROM vendors WHERE id = %s", (vendor_id,))
+            vendor = cur.fetchone()
+            if not vendor:
+                raise ValueError("Unknown vendor.")
+            cur.execute(
+                """
+                SELECT vp.id, vp.part_number, vp.vendor_model, vp.unit_price, vp.moq
+                FROM vendor_parts vp WHERE vp.vendor_id = %s
+                """,
+                (vendor_id,),
+            )
+            offers = {row["part_number"]: row for row in cur.fetchall()}
+            cur.execute(
+                """
+                SELECT vp.part_number, b.min_qty, b.unit_price
+                FROM vendor_price_breaks b
+                JOIN vendor_parts vp ON vp.id = b.vendor_part_id
+                WHERE vp.vendor_id = %s
+                """,
+                (vendor_id,),
+            )
+            breaks: dict[str, list] = {}
+            for row in cur.fetchall():
+                breaks.setdefault(row["part_number"], []).append(
+                    {"min_qty": row["min_qty"], "unit_price": float(row["unit_price"])}
+                )
+
+            parsed = []
+            for line in lines:
+                part = str(line.get("partNumber", "")).strip()
+                quantity = int(line.get("quantity", 0))
+                offer = offers.get(part)
+                if not offer:
+                    raise ValueError(f"{vendor['name']} does not carry {part}.")
+                if quantity <= 0:
+                    raise ValueError("Line quantity must be greater than zero.")
+                if quantity < offer["moq"]:
+                    raise ValueError(
+                        f"{part}: quantity {quantity} is below {vendor['name']}'s MOQ of {offer['moq']}."
+                    )
+                price = line.get("unitPrice")
+                price = (
+                    _price_at_qty(float(offer["unit_price"]), breaks.get(part, []), quantity)
+                    if price is None else round(float(price), 2)
+                )
+                if price < 0:
+                    raise ValueError("Unit price cannot be negative.")
+                parsed.append({
+                    "part_number": part, "vendor_model": offer["vendor_model"],
+                    "quantity": quantity, "unit_price": price,
+                })
+
+            po_no = _next_sales_number(cur, "purchase_orders", "po_no", "VPO-")
+            cur.execute(
+                "INSERT INTO purchase_orders (po_no, vendor_id) VALUES (%s, %s) RETURNING id",
+                (po_no, vendor_id),
+            )
+            po_id = cur.fetchone()["id"]
+            for line in parsed:
+                cur.execute(
+                    """
+                    INSERT INTO purchase_order_lines
+                      (purchase_order_id, part_number, vendor_model, quantity, unit_price)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (po_id, line["part_number"], line["vendor_model"], line["quantity"], line["unit_price"]),
+                )
+        conn.commit()
+    total = round(sum(l["unit_price"] * l["quantity"] for l in parsed), 2)
+    return {"poNo": po_no, "vendor": vendor["name"], "lines": len(parsed), "total": total}
+
+
+def receive_vendor_po(payload: dict) -> dict:
+    """Receive an issued vendor PO in full: bins fill at the ordered
+    quantities, the ledger posts DR Raw Materials / CR Accounts Payable at
+    PO prices, and each part's booked actual cost updates to its receipt
+    price (last-receipt-price policy, audited)."""
+    po_no = str(payload.get("poNo", "")).strip()
+    if not po_no:
+        raise ValueError("poNo is required.")
+
+    with psycopg.connect(require_database_url(), row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            _purchasing_ready(cur)
+            cur.execute(
+                """
+                SELECT po.id, po.status, v.name AS vendor
+                FROM purchase_orders po JOIN vendors v ON v.id = po.vendor_id
+                WHERE po.po_no = %s
+                """,
+                (po_no,),
+            )
+            po = cur.fetchone()
+            if not po:
+                raise ValueError(f"Unknown purchase order {po_no}.")
+            if po["status"] != "issued":
+                raise ValueError(f"{po_no} is already {po['status']}.")
+            cur.execute(
+                "SELECT part_number, quantity, unit_price FROM purchase_order_lines WHERE purchase_order_id = %s ORDER BY id",
+                (po["id"],),
+            )
+            lines = cur.fetchall()
+            if not lines:
+                raise ValueError(f"{po_no} has no lines.")
+
+            repriced = []
+            for line in lines:
+                part = line["part_number"]
+                quantity = line["quantity"]
+                price = float(line["unit_price"])
+                cur.execute(
+                    """
+                    SELECT id, location_zone_id, unit FROM inventory_items
+                    WHERE part_number = %s ORDER BY id LIMIT 1
+                    """,
+                    (part,),
+                )
+                bin_row = cur.fetchone()
+                if not bin_row:
+                    raise ValueError(f"No inventory bin exists for {part}.")
+                cur.execute(
+                    "UPDATE inventory_items SET quantity_on_hand = quantity_on_hand + %s, updated_at = now() WHERE id = %s",
+                    (quantity, bin_row["id"]),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO inventory_transactions
+                      (inventory_item_id, transaction_type, to_zone_id, part_number, quantity, unit, reference)
+                    VALUES (%s, 'create', %s, %s, %s, %s, %s)
+                    """,
+                    (bin_row["id"], bin_row["location_zone_id"], part, quantity, bin_row["unit"], po_no),
+                )
+                # Last-receipt-price policy: the PO price becomes the booked
+                # actual cost, audited like any standards change.
+                cur.execute("SELECT actual_cost FROM standard_costs WHERE part_number = %s", (part,))
+                std = cur.fetchone()
+                if std and abs(float(std["actual_cost"]) - price) >= 0.005:
+                    cur.execute(
+                        "UPDATE standard_costs SET actual_cost = %s, updated_at = now() WHERE part_number = %s",
+                        (price, part),
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO standards_audit (actor, item_type, item_key, field, old_value, new_value)
+                        VALUES (%s, 'material', %s, 'actual', %s, %s)
+                        """,
+                        (f"receiving {po_no}", part, f"{float(std['actual_cost']):.2f}", f"{price:.2f}"),
+                    )
+                    repriced.append(part)
+
+            total = round(sum(float(l["unit_price"]) * l["quantity"] for l in lines), 2)
+            post_cost_entry(
+                cur, f"{po_no}-RCV", None, po_no, "po_receipt",
+                f"{po_no}: receive {len(lines)} line(s) from {po['vendor']} at PO prices",
+                [(RM_ACCOUNT, total, 0), (AP_ACCOUNT, 0, total)],
+            )
+            cur.execute(
+                "UPDATE purchase_orders SET status = 'received', received_at = now() WHERE id = %s",
+                (po["id"],),
+            )
+        conn.commit()
+    return {
+        "poNo": po_no,
+        "vendor": po["vendor"],
+        "lines": len(lines),
+        "total": total,
+        "repriced": repriced,
     }
 
 
@@ -4529,6 +5064,7 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
             "/api/costing/standards",
             "/api/costing/accounts",
             "/api/sales",
+            "/api/purchasing",
             "/api/audit/package",
             "/api/audit/certifications",
         ):
@@ -4557,6 +5093,8 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
                     payload = fetch_gl_accounts()
                 elif path == "/api/sales":
                     payload = fetch_sales()
+                elif path == "/api/purchasing":
+                    payload = fetch_purchasing()
                 elif path == "/api/audit/package":
                     payload = build_audit_package()
                 elif path == "/api/audit/certifications":
@@ -4609,6 +5147,12 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
             "/api/sales/customer",
             "/api/sales/order",
             "/api/sales/invoice",
+            "/api/purchasing/vendor",
+            "/api/purchasing/settings",
+            "/api/purchasing/minmax",
+            "/api/purchasing/preferred",
+            "/api/purchasing/order",
+            "/api/purchasing/receive",
             "/api/audit/certify",
             "/api/schedule/preview",
             "/api/schedule/max-output",
@@ -4654,6 +5198,24 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
                 return
             if path == "/api/sales/invoice":
                 json_response(self, HTTPStatus.OK, ship_and_invoice(payload))
+                return
+            if path == "/api/purchasing/vendor":
+                json_response(self, HTTPStatus.OK, manage_vendor(payload))
+                return
+            if path == "/api/purchasing/settings":
+                json_response(self, HTTPStatus.OK, set_purchasing_settings(payload))
+                return
+            if path == "/api/purchasing/minmax":
+                json_response(self, HTTPStatus.OK, set_part_min_max(payload))
+                return
+            if path == "/api/purchasing/preferred":
+                json_response(self, HTTPStatus.OK, set_preferred_offer(payload))
+                return
+            if path == "/api/purchasing/order":
+                json_response(self, HTTPStatus.OK, create_vendor_po(payload))
+                return
+            if path == "/api/purchasing/receive":
+                json_response(self, HTTPStatus.OK, receive_vendor_po(payload))
                 return
             if path == "/api/audit/certify":
                 json_response(self, HTTPStatus.OK, run_audit_certification(payload))
