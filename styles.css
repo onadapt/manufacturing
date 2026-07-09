@@ -2078,6 +2078,16 @@ body.view-rework .shipping-route {
   padding: 0 14px;
 }
 
+/* Purchasing planner: compact numeric inputs and the preferred-offer star. */
+.mm-input {
+  width: 74px;
+}
+
+.pref-star {
+  color: var(--oa-accent);
+  font-size: 1.2rem;
+}
+
 .actor-label {
   display: inline-flex;
   align-items: center;
