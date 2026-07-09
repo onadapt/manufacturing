@@ -2017,6 +2017,74 @@ body.view-rework .shipping-route {
   }
 }
 
+/* --- Ask AI agent: approval cards + action results --- */
+
+.ask-actions-card {
+  border: 1px solid var(--oa-accent) !important;
+  width: 100%;
+}
+
+.ask-actions-head {
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--oa-accent-ink);
+  margin-bottom: 6px;
+}
+
+.ask-action-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 4px 0;
+  font-size: 0.8rem;
+}
+
+.ask-action-row input {
+  margin-top: 3px;
+}
+
+.ask-actions-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.ask-go {
+  border: 0;
+  background: #047857;
+  color: #fff;
+  font-weight: 800;
+  font-size: 0.74rem;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+
+.ask-go:hover {
+  background: #065f46;
+}
+
+.ask-no {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #475569;
+  font-weight: 700;
+  font-size: 0.74rem;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+
+.ask-results ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.ask-results li {
+  padding: 2px 0;
+  font-size: 0.78rem;
+}
+
 /* --- Internal audit page --- */
 
 .opinion-banner {

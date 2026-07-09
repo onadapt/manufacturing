@@ -3,6 +3,9 @@ import hashlib
 import json
 import math
 import os
+import threading
+import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -3179,6 +3182,437 @@ def fetch_audit_certifications() -> dict:
     return {"certifications": certifications}
 
 
+# ===== Ask AI agent (platform contract, extended with tool use + approval) =====
+# Mirrors the Onadapt/Waypoint Ask AI acting layer: the model chooses tools and
+# fills in arguments; the executors below (ordinary calls into this app's own
+# functions) do the work. Reads run freely mid-loop; every WRITE pauses for
+# operator approval in the panel. Two-call protocol:
+#   POST /api/ask-ai          {question, session_id?} -> {session_id, answer,
+#                              mode, model|note, proposed_actions[]}
+#   POST /api/ask-ai/execute  {session_id, approvals:{tool_use_id: bool}} ->
+#                              {session_id, answer, mode, results[], proposed_actions[]}
+
+AGENT_WRITE_TOOLS = {
+    "create_production_order", "move_order", "set_station_capacity",
+    "set_cycle_minutes", "set_working_hours", "set_standard",
+    "record_signoff", "run_audit",
+}
+_AGENT_MAX_STEPS = 6
+_AGENT_SESSION_TTL = 2 * 60 * 60
+_AGENT_SESSIONS: dict[str, dict] = {}
+_AGENT_LOCK = threading.Lock()
+
+AGENT_TOOL_SPECS = [
+    {"name": "get_schedule",
+     "description": "Both production lines' live schedule: per-station capacity/cycle/max-rate/bottleneck and every active order with status, priority, and projected start/finish. Read-only.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "get_station",
+     "description": "One station's detail: vitals, utilization, upcoming orders, and parts stocked there. Zone ids: drone line receiving, raw, ws1..ws5, fg, inventory; case line case_receiving, case_raw, cws1..cws4, case_fg, case_inventory. Read-only.",
+     "input_schema": {"type": "object", "properties": {
+         "zone": {"type": "string", "description": "Zone id, e.g. ws4 or cws1."}}, "required": ["zone"]}},
+    {"name": "check_kit",
+     "description": "Material-release kit check for a prospective build: every BOM line's availability (available / short / substitute / not stocked), serialized parts, and a RELEASE/HOLD verdict. Read-only.",
+     "input_schema": {"type": "object", "properties": {
+         "finishedSku": {"type": "string", "enum": ["DRN-FG-600", "CASE-FG-500"]},
+         "quantity": {"type": "integer", "minimum": 1}}, "required": ["finishedSku", "quantity"]}},
+    {"name": "get_order",
+     "description": "One production order's detail: status, station progress, material lines, and serialized build records. Read-only.",
+     "input_schema": {"type": "object", "properties": {
+         "orderNo": {"type": "string", "description": "e.g. DRN-PO-1004"}}, "required": ["orderNo"]}},
+    {"name": "get_cost_card",
+     "description": "The standard cost build-up per unit for a product (DM lines, labor by station, overhead, unit standard). Read-only.",
+     "input_schema": {"type": "object", "properties": {
+         "sku": {"type": "string", "enum": ["DRN-FG-600", "CASE-FG-500"]}}, "required": ["sku"]}},
+    {"name": "get_trial_balance",
+     "description": "The cost ledger trial balance with account balances plus the six live control checks. Read-only.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "get_variance_report",
+     "description": "Per-completed-order cost variances (PPV, labor rate, labor efficiency, OH absorption; positive = unfavorable) with totals. Read-only.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "get_wip_valuation",
+     "description": "Live WIP valuation per active order (absorbed to date vs standard at completion) tied to the GL WIP balance. Read-only.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "get_standards",
+     "description": "Material standard/actual costs, labor rates by role, overhead rates, and recent standards changes. Read-only.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "get_certifications",
+     "description": "Internal audit certification history (opinions, assertions passed, package hashes). Read-only.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "get_working_hours",
+     "description": "The plant working-hours calendar (or 24/7). Read-only.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "create_production_order",
+     "description": "Create a real production order on the matching line. Shortages of the manufactured case auto-create a replenishment case order.",
+     "input_schema": {"type": "object", "properties": {
+         "finishedSku": {"type": "string", "enum": ["DRN-FG-600", "CASE-FG-500"]},
+         "quantity": {"type": "integer", "minimum": 1},
+         "dueDate": {"type": "string", "description": "YYYY-MM-DD"},
+         "startDate": {"type": "string", "description": "Optional YYYY-MM-DD; defaults to today."}},
+         "required": ["finishedSku", "quantity", "dueDate"]}},
+    {"name": "move_order",
+     "description": "Move an active order one slot up (earlier) or down (later) in its line's queue. CAUTION: moving ahead of a deep in-flight order resets that order's simulated progress.",
+     "input_schema": {"type": "object", "properties": {
+         "orderNo": {"type": "string"},
+         "direction": {"type": "string", "enum": ["up", "down"]}}, "required": ["orderNo", "direction"]}},
+    {"name": "set_station_capacity",
+     "description": "Set a workstation's batch capacity (units worked at once); null clears to unconstrained. Re-times in-flight orders immediately.",
+     "input_schema": {"type": "object", "properties": {
+         "zoneId": {"type": "string"},
+         "capacity": {"type": ["integer", "null"], "minimum": 1}}, "required": ["zoneId"]}},
+    {"name": "set_cycle_minutes",
+     "description": "Set a station's routed cycle minutes. Changes schedules, max output, the bottleneck, and drives labor efficiency variance vs the frozen standard.",
+     "input_schema": {"type": "object", "properties": {
+         "zoneId": {"type": "string"},
+         "minutes": {"type": "integer", "minimum": 1}}, "required": ["zoneId", "minutes"]}},
+    {"name": "set_working_hours",
+     "description": "Set the plant working-hours calendar (times are plant-local; every schedule computation skips off-shift time), or clear to 24/7 by passing null start/end.",
+     "input_schema": {"type": "object", "properties": {
+         "workStart": {"type": ["string", "null"], "description": "HH:MM or null for 24/7."},
+         "workEnd": {"type": ["string", "null"]},
+         "workDays": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 6}, "description": "Monday=0."},
+         "timeZone": {"type": "string", "enum": ["UTC", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles"]}},
+         "required": ["workStart", "workEnd"]}},
+    {"name": "set_standard",
+     "description": "Edit a material standard/actual cost or a labor role's standard/actual rate. Reprices future postings and revalues on-hand finished stock; every change is audited.",
+     "input_schema": {"type": "object", "properties": {
+         "itemType": {"type": "string", "enum": ["material", "labor"]},
+         "key": {"type": "string", "description": "Part number or role name."},
+         "field": {"type": "string", "enum": ["standard", "actual"]},
+         "value": {"type": "number", "minimum": 0}},
+         "required": ["itemType", "key", "field", "value"]}},
+    {"name": "record_signoff",
+     "description": "Record an operator PASS/FAIL signoff against a station's standard script.",
+     "input_schema": {"type": "object", "properties": {
+         "zoneId": {"type": "string"},
+         "operator": {"type": "string"},
+         "result": {"type": "string", "enum": ["pass", "fail"]},
+         "notes": {"type": "string"},
+         "orderNo": {"type": "string"}},
+         "required": ["zoneId", "operator", "result"]}},
+    {"name": "run_audit",
+     "description": "Run the internal audit: build the evidence package, certify it, and store the certification immutably.",
+     "input_schema": {"type": "object", "properties": {}}},
+]
+
+
+def _agent_system() -> str:
+    return (
+        "You are the Ask AI assistant inside a drone manufacturing demo plant "
+        "(drone line builds DRN-FG-600 packaged inspection drones; case line builds "
+        "CASE-FG-500 transport cases stocked into Case Inventory and pulled by drone "
+        "packaging; shortages auto-create replenishment case orders). You can both "
+        "ANSWER questions and TAKE ACTIONS by calling tools.\n"
+        "- To answer, ground yourself in the live plant snapshot provided and the "
+        "read tools; don't invent orders, quantities, or dollar amounts.\n"
+        "- To change anything, call the matching write tool. Every write pauses for "
+        "the operator to approve, so never claim something is done until you receive "
+        "a tool result confirming it.\n"
+        "- The costing system is standard absorption costing; positive variances are "
+        "unfavorable. Zone ids: drone line receiving, raw, ws1..ws5, fg, inventory; "
+        "case line case_receiving, case_raw, cws1..cws4, case_fg, case_inventory.\n"
+        "- Be concise and operational; resolve relative dates to YYYY-MM-DD. "
+        f"Today is {datetime.now(timezone.utc).date().isoformat()} (UTC)."
+    )
+
+
+def _agent_trim_order(snapshot: dict) -> dict:
+    order = snapshot.get("order")
+    if not order:
+        return {"status": "error", "message": "Order not found."}
+    return {
+        "order": {key: order.get(key) for key in (
+            "order_no", "finished_good", "quantity", "status", "production_status",
+            "current_zone", "percent_complete", "due_date")},
+        "materials": [
+            {"part_number": m["part_number"], "status": m["status"],
+             "required_quantity": float(m["required_quantity"])}
+            for m in snapshot.get("materials", [])
+        ],
+        "records": snapshot.get("records", []),
+    }
+
+
+def _agent_exec_get_schedule(args: dict) -> dict:
+    data = fetch_schedule()
+    return {
+        "now": data["now"],
+        "work_hours": data["work_hours"],
+        "lines": [
+            {
+                "facility": line["facility_name"],
+                "stations": line["stations"],
+                "orders": [
+                    {key: order.get(key) for key in (
+                        "order_no", "finished_good", "quantity", "production_status",
+                        "percent_complete", "priority", "due_date", "start", "finish")}
+                    for order in line["orders"]
+                ],
+            }
+            for line in data["lines"]
+        ],
+    }
+
+
+def _agent_exec_get_station(args: dict) -> dict:
+    data = fetch_station(str(args.get("zone", "")).strip())
+    return {
+        "zone": data["zone"],
+        "utilization": data["utilization"],
+        "idle_at": data["idle_at"],
+        "schedule": data["schedule"],
+        "parts": [
+            {"part_number": p["part_number"], "on_hand": float(p["quantity_on_hand"]),
+             "available": float(p["quantity_available"]), "status": p["status"]}
+            for p in data["parts"]
+        ],
+    }
+
+
+def _agent_exec_get_cost_card(args: dict) -> dict:
+    sku = str(args.get("sku", "")).strip()
+    for card in fetch_cost_cards()["cards"]:
+        if card["sku"] == sku:
+            return card
+    return {"status": "error", "message": f"Unknown sku {sku}."}
+
+
+def _agent_exec_create_order(args: dict) -> dict:
+    snapshot = create_order({
+        "finishedSku": args.get("finishedSku"),
+        "quantity": args.get("quantity"),
+        "dueDate": args.get("dueDate"),
+        "startDate": args.get("startDate", ""),
+    })
+    trimmed = _agent_trim_order(snapshot)
+    shorts = [m for m in trimmed.get("materials", []) if m["status"] == "short"]
+    return {
+        "status": "created",
+        "order": trimmed["order"],
+        "short_lines": shorts,
+        "note": "Short manufactured pulls auto-create a replenishment case order." if shorts else None,
+    }
+
+
+def _agent_exec_run_audit(args: dict) -> dict:
+    cert = run_audit_certification({"actor": "Ask AI (operator approved)"})
+    return {key: cert[key] for key in (
+        "certification_id", "opinion", "mode", "model", "basis", "findings",
+        "assertion_summary", "package_hash")}
+
+
+AGENT_EXECUTORS = {
+    "get_schedule": _agent_exec_get_schedule,
+    "get_station": _agent_exec_get_station,
+    "check_kit": lambda args: kit_check(str(args.get("finishedSku", "")), int(args.get("quantity", 1))),
+    "get_order": lambda args: _agent_trim_order(fetch_order_snapshot(str(args.get("orderNo", "")).strip())),
+    "get_cost_card": _agent_exec_get_cost_card,
+    "get_trial_balance": lambda args: fetch_trial_balance(),
+    "get_variance_report": lambda args: fetch_variance_report(),
+    "get_wip_valuation": lambda args: fetch_costing_wip(),
+    "get_standards": lambda args: fetch_costing_standards(),
+    "get_certifications": lambda args: fetch_audit_certifications(),
+    "get_working_hours": lambda args: fetch_plant_settings(),
+    "create_production_order": _agent_exec_create_order,
+    "move_order": lambda args: set_order_priority(args),
+    "set_station_capacity": lambda args: set_zone_capacity(args),
+    "set_cycle_minutes": lambda args: set_zone_cycle(args),
+    "set_working_hours": lambda args: set_plant_settings(args),
+    "set_standard": lambda args: set_costing_standard({**args, "actor": "Ask AI (approved)"}),
+    "record_signoff": lambda args: record_station_signoff(args),
+    "run_audit": _agent_exec_run_audit,
+}
+
+
+def agent_execute_tool(name: str, args: dict) -> dict:
+    executor = AGENT_EXECUTORS.get(name)
+    if not executor:
+        return {"status": "error", "message": f"Unknown tool '{name}'."}
+    try:
+        return executor(args or {})
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+    except Exception as exc:
+        return {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
+
+
+def agent_summarize(name: str, args: dict) -> str:
+    a = args or {}
+    if name == "create_production_order":
+        return (f"Create production order: **{a.get('quantity')} × {a.get('finishedSku')}** "
+                f"due {a.get('dueDate')}")
+    if name == "move_order":
+        return f"Move **{a.get('orderNo')}** {a.get('direction')} one slot in its line's queue"
+    if name == "set_station_capacity":
+        capacity = a.get("capacity")
+        return (f"Set **{a.get('zoneId')}** batch capacity to "
+                f"{'unconstrained' if capacity is None else capacity}")
+    if name == "set_cycle_minutes":
+        return f"Set **{a.get('zoneId')}** cycle time to {a.get('minutes')} min"
+    if name == "set_working_hours":
+        if not a.get("workStart"):
+            return "Set plant working hours to **24/7**"
+        days = ",".join(str(d) for d in a.get("workDays", []))
+        return (f"Set plant working hours to **{a.get('workStart')}–{a.get('workEnd')}** "
+                f"days [{days}] ({a.get('timeZone', 'UTC')})")
+    if name == "set_standard":
+        return (f"Change {a.get('itemType')} **{a.get('key')}** {a.get('field')} "
+                f"to {a.get('value')}")
+    if name == "record_signoff":
+        return (f"Record **{str(a.get('result', '')).upper()}** signoff at {a.get('zoneId')} "
+                f"by {a.get('operator')}")
+    if name == "run_audit":
+        return "Run the internal audit and store a certification"
+    return f"{name}({json.dumps(a, default=str)})"
+
+
+def _agent_sweep() -> None:
+    cutoff = time.time() - _AGENT_SESSION_TTL
+    with _AGENT_LOCK:
+        stale = [sid for sid, sess in _AGENT_SESSIONS.items() if sess.get("updated", 0) < cutoff]
+        for sid in stale:
+            del _AGENT_SESSIONS[sid]
+
+
+def _agent_tool_result(tool_use_id: str, output: dict) -> dict:
+    return {"type": "tool_result", "tool_use_id": tool_use_id,
+            "content": json.dumps(output, default=str)}
+
+
+def _agent_run_live(sess: dict, system: str) -> dict:
+    import anthropic
+
+    client = anthropic.Anthropic()
+    for _ in range(_AGENT_MAX_STEPS):
+        response = client.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=2048,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "low"},
+            system=system,
+            messages=sess["messages"],
+            tools=AGENT_TOOL_SPECS,
+        )
+        assistant_content = []
+        for block in response.content:
+            if block.type == "text":
+                assistant_content.append({"type": "text", "text": block.text})
+            elif block.type == "tool_use":
+                assistant_content.append(
+                    {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
+        sess["messages"].append({"role": "assistant", "content": assistant_content})
+
+        tool_uses = [b for b in response.content if b.type == "tool_use"]
+        text = "".join(b.text for b in response.content if b.type == "text").strip()
+        if not tool_uses:
+            return {"answer": text or "No response.", "mode": "claude",
+                    "model": ANTHROPIC_MODEL, "proposed_actions": []}
+
+        writes = [b for b in tool_uses if b.name in AGENT_WRITE_TOOLS]
+        if not writes:
+            sess["messages"].append({
+                "role": "user",
+                "content": [_agent_tool_result(b.id, agent_execute_tool(b.name, b.input))
+                            for b in tool_uses],
+            })
+            continue
+
+        # A write appeared: pause for approval. Pre-run same-turn reads.
+        sess["read_results"] = [
+            _agent_tool_result(b.id, agent_execute_tool(b.name, b.input))
+            for b in tool_uses if b.name not in AGENT_WRITE_TOOLS
+        ]
+        sess["pending"] = [
+            {"id": b.id, "tool": b.name, "args": b.input,
+             "summary": agent_summarize(b.name, b.input)}
+            for b in writes
+        ]
+        return {"answer": text, "mode": "claude", "model": ANTHROPIC_MODEL,
+                "proposed_actions": sess["pending"]}
+    return {"answer": "Stopped after too many steps.", "mode": "claude",
+            "model": ANTHROPIC_MODEL, "proposed_actions": []}
+
+
+def agent_ask(payload: dict) -> dict:
+    question = str(payload.get("question", "")).strip()
+    if not question:
+        raise ValueError("Ask a question about the plant.")
+    if len(question) > 2000:
+        raise ValueError("Question is too long.")
+    _agent_sweep()
+    sid = str(payload.get("session_id", "")).strip() or uuid.uuid4().hex
+
+    context_text, _ = build_ask_ai_context()
+    if not ask_ai_available():
+        return {
+            "session_id": sid,
+            "answer": offline_ask_ai_answer(context_text),
+            "mode": "offline",
+            "note": "Offline mode - set ANTHROPIC_API_KEY on the server for Claude-driven tool use.",
+            "proposed_actions": [],
+        }
+
+    with _AGENT_LOCK:
+        sess = _AGENT_SESSIONS.get(sid) or {"messages": [], "pending": [], "read_results": []}
+    system = _agent_system() + "\n\nLIVE PLANT SNAPSHOT:\n" + context_text
+    sess["messages"].append({"role": "user", "content": question})
+    try:
+        result = _agent_run_live(sess, system)
+    except Exception as exc:
+        # Drop the failed turn so a retry starts clean, then answer offline.
+        sess["messages"].pop()
+        result = {
+            "answer": offline_ask_ai_answer(context_text),
+            "mode": "offline",
+            "note": f"Claude unavailable ({type(exc).__name__}); answered from live plant data.",
+            "proposed_actions": [],
+        }
+    sess["updated"] = time.time()
+    with _AGENT_LOCK:
+        _AGENT_SESSIONS[sid] = sess
+    return {"session_id": sid, **result}
+
+
+def agent_execute(payload: dict) -> dict:
+    sid = str(payload.get("session_id", "")).strip()
+    approvals = payload.get("approvals") or {}
+    with _AGENT_LOCK:
+        sess = _AGENT_SESSIONS.get(sid)
+        pending = list(sess.get("pending", [])) if sess else []
+        if sess:
+            sess["pending"] = []
+    if not sess or not pending:
+        return {"session_id": sid, "answer": "Nothing to execute.", "mode": "offline",
+                "note": "No pending actions for this session.", "results": [],
+                "proposed_actions": []}
+
+    results = list(sess.get("read_results", []))
+    ran = []
+    for action in pending:
+        if approvals.get(action["id"]):
+            output = agent_execute_tool(action["tool"], action["args"])
+            ran.append({"summary": action["summary"], "result": output})
+            results.append(_agent_tool_result(action["id"], output))
+        else:
+            results.append(_agent_tool_result(
+                action["id"], {"status": "declined", "message": "Operator declined."}))
+            ran.append({"summary": action["summary"], "result": {"status": "declined"}})
+    sess["messages"].append({"role": "user", "content": results})
+    sess["read_results"] = []
+
+    context_text, _ = build_ask_ai_context()
+    system = _agent_system() + "\n\nLIVE PLANT SNAPSHOT:\n" + context_text
+    try:
+        tail = _agent_run_live(sess, system)
+    except Exception as exc:
+        tail = {"answer": "Actions processed; see results below.", "mode": "offline",
+                "note": f"Claude unavailable for the follow-up ({type(exc).__name__}).",
+                "proposed_actions": []}
+    sess["updated"] = time.time()
+    with _AGENT_LOCK:
+        _AGENT_SESSIONS[sid] = sess
+    return {"session_id": sid, **tail, "results": ran}
+
+
 def fetch_plant_settings() -> dict:
     with psycopg.connect(require_database_url(), row_factory=dict_row) as conn:
         with conn.cursor() as cur:
@@ -3595,6 +4029,7 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
             "/api/production-orders",
             "/api/reset-activity",
             "/api/ask-ai",
+            "/api/ask-ai/execute",
             "/api/zone-capacity",
             "/api/zone-cycle",
             "/api/order-priority",
@@ -3639,7 +4074,10 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
                 json_response(self, HTTPStatus.OK, run_audit_certification(payload))
                 return
             if path == "/api/ask-ai":
-                json_response(self, HTTPStatus.OK, ask_ai(payload))
+                json_response(self, HTTPStatus.OK, agent_ask(payload))
+                return
+            if path == "/api/ask-ai/execute":
+                json_response(self, HTTPStatus.OK, agent_execute(payload))
                 return
             if path == "/api/reset-activity":
                 json_response(self, HTTPStatus.OK, reset_activity(payload))
