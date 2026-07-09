@@ -3163,7 +3163,7 @@ def fetch_sales() -> dict:
                 lines = lines_by_order.get(order["id"], [])
                 order["lines"] = lines
                 order["subtotal"] = round(sum(float(l["unit_price"]) * l["quantity"] for l in lines), 2)
-                if order["status"] == "open":
+                if order["status"] in ("open", "draft", "backorder"):
                     required: dict[str, int] = {}
                     for line in lines:
                         required[line["sku"]] = required.get(line["sku"], 0) + line["quantity"]
@@ -3919,6 +3919,550 @@ def receive_vendor_po(payload: dict) -> dict:
         "lines": len(lines),
         "total": total,
         "repriced": repriced,
+    }
+
+
+# ===== Email order intake =====
+# An IMAP poller (or the test-injection endpoint) lands emails in
+# inbound_emails; the LLM order clerk classifies each one and drafts an
+# UNPOSTED sales order (status 'draft') for human review. Accept runs the
+# availability test: fulfillable -> ships and invoices immediately;
+# short -> 'backorder' + auto-created production orders for the shortfall,
+# re-tested every worker cycle until stock lands, then auto-shipped.
+
+INTAKE_POLL_SECONDS = int(os.environ.get("INTAKE_POLL_SECONDS", "60"))
+INTAKE_CONFIDENCE_THRESHOLD = 0.5
+_INTAKE_STATE: dict = {"last_poll": None, "last_error": None, "last_result": None}
+_INTAKE_STATE_LOCK = threading.Lock()
+
+INTAKE_SYSTEM = (
+    "You are the order-desk clerk for a drone manufacturing plant. You receive "
+    "one inbound email plus the sellable SKUs and known customers. Decide whether "
+    "the email is a PRODUCT ORDER (a request to buy finished goods). Quotes, "
+    "spam, questions, complaints, vendor mail, and job applications are NOT "
+    "orders. Map plain language to SKUs: drones/quadcopters/inspection drones -> "
+    "DRN-FG-600; transport/carry/protective cases -> CASE-FG-500. Respond with "
+    "ONLY a JSON object: {\"is_order\": bool, \"confidence\": 0..1, "
+    "\"customer_name\": str, \"is_new_customer\": bool, \"lines\": "
+    "[{\"sku\": str, \"quantity\": int}], \"requested_date\": \"YYYY-MM-DD\"|null, "
+    "\"reasoning\": one sentence}. Match customer_name to a known customer when "
+    "the email plausibly comes from one; otherwise use the sender's name/company "
+    "and set is_new_customer true. Only include lines with sellable SKUs and "
+    "positive quantities."
+)
+
+
+def _intake_note(**kwargs) -> None:
+    with _INTAKE_STATE_LOCK:
+        _INTAKE_STATE.update(kwargs)
+
+
+def imap_configured() -> bool:
+    return bool(
+        os.environ.get("IMAP_HOST")
+        and os.environ.get("IMAP_USER")
+        and os.environ.get("IMAP_PASSWORD")
+    )
+
+
+def _decode_mime_header(value) -> str:
+    import email.header
+
+    if not value:
+        return ""
+    parts = []
+    for chunk, charset in email.header.decode_header(value):
+        if isinstance(chunk, bytes):
+            parts.append(chunk.decode(charset or "utf-8", errors="replace"))
+        else:
+            parts.append(chunk)
+    return "".join(parts).strip()
+
+
+def _email_body_text(msg) -> str:
+    def decode(part):
+        payload = part.get_payload(decode=True)
+        if payload is None:
+            return ""
+        return payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+
+    body = ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_type() == "text/plain" and "attachment" not in str(
+                part.get("Content-Disposition", "")
+            ):
+                body = decode(part)
+                break
+        if not body:
+            for part in msg.walk():
+                if part.get_content_type() == "text/html":
+                    import re as _re
+
+                    body = _re.sub(r"<[^>]+>", " ", decode(part))
+                    break
+    else:
+        body = decode(msg)
+    return body.strip()[:20000]
+
+
+def store_inbound_email(cur, message_id, from_name, from_email, subject, body) -> int | None:
+    """Insert an email; returns the new id, or None if already stored."""
+    cur.execute(
+        """
+        INSERT INTO inbound_emails (message_id, from_name, from_email, subject, body)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (message_id) DO NOTHING
+        RETURNING id
+        """,
+        (message_id, from_name[:120], from_email[:200], subject[:300], body),
+    )
+    row = cur.fetchone()
+    return row["id"] if row else None
+
+
+def fetch_mailbox() -> int:
+    """Pull unseen messages from the configured IMAP mailbox. Returns the
+    number of newly stored emails."""
+    import email as email_lib
+    import email.utils
+    import imaplib
+
+    host = os.environ["IMAP_HOST"]
+    port = int(os.environ.get("IMAP_PORT", "993"))
+    folder = os.environ.get("IMAP_FOLDER", "INBOX")
+    stored = 0
+    conn = imaplib.IMAP4_SSL(host, port)
+    try:
+        conn.login(os.environ["IMAP_USER"], os.environ["IMAP_PASSWORD"])
+        conn.select(folder)
+        _, data = conn.search(None, "UNSEEN")
+        ids = data[0].split() if data and data[0] else []
+        if ids:
+            with psycopg.connect(require_database_url(), row_factory=dict_row) as db:
+                with db.cursor() as cur:
+                    for num in ids[:25]:
+                        _, msg_data = conn.fetch(num, "(RFC822)")
+                        msg = email_lib.message_from_bytes(msg_data[0][1])
+                        from_name, from_email = email.utils.parseaddr(msg.get("From", ""))
+                        new_id = store_inbound_email(
+                            cur,
+                            msg.get("Message-ID") or f"<no-id-{num.decode()}@{host}>",
+                            _decode_mime_header(from_name),
+                            from_email,
+                            _decode_mime_header(msg.get("Subject", "")),
+                            _email_body_text(msg),
+                        )
+                        if new_id:
+                            stored += 1
+                        conn.store(num, "+FLAGS", "\\Seen")
+                db.commit()
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+    return stored
+
+
+def _parse_intake_json(text: str) -> dict:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("```")[1]
+        cleaned = cleaned[4:] if cleaned.startswith("json") else cleaned
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start == -1 or end == -1:
+        raise ValueError("No JSON object in classifier response.")
+    return json.loads(cleaned[start : end + 1])
+
+
+def offline_classify(email_row, skus) -> dict:
+    """Keyword fallback when the LLM is unavailable: conservative — only
+    drafts when a sellable product and a quantity are clearly present."""
+    import re as _re
+
+    text = f"{email_row['subject']}\n{email_row['body']}".lower()
+    words = {"DRN-FG-600": ["drone", "quadcopter", "drn-fg-600"],
+             "CASE-FG-500": ["case", "cases", "case-fg-500"]}
+    lines = []
+    for sku in skus:
+        for word in words.get(sku, [sku.lower()]):
+            match = _re.search(r"(\d+)\s*(?:x\s*)?" + _re.escape(word), text)
+            if match:
+                lines.append({"sku": sku, "quantity": int(match.group(1))})
+                break
+    is_order = bool(lines) and any(k in text for k in ("order", "purchase", "buy", "quote us", "po "))
+    return {
+        "is_order": is_order,
+        "confidence": 0.6 if is_order else 0.2,
+        "customer_name": email_row["from_name"] or email_row["from_email"],
+        "is_new_customer": True,
+        "lines": lines,
+        "requested_date": None,
+        "reasoning": "Offline keyword classification (LLM unavailable).",
+    }
+
+
+def classify_order_email(email_row, customers, skus) -> dict:
+    try:
+        import anthropic
+
+        client = anthropic.Anthropic()
+        payload = {
+            "email": {
+                "from_name": email_row["from_name"],
+                "from_email": email_row["from_email"],
+                "subject": email_row["subject"],
+                "body": email_row["body"][:6000],
+            },
+            "sellable_skus": skus,
+            "known_customers": customers,
+        }
+        response = client.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=1500,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "low"},
+            system=INTAKE_SYSTEM,
+            messages=[{"role": "user", "content": json.dumps(payload)}],
+        )
+        text = "".join(block.text for block in response.content if block.type == "text")
+        result = _parse_intake_json(text)
+        result["mode"] = "claude"
+        return result
+    except Exception:
+        result = offline_classify(email_row, skus)
+        result["mode"] = "offline"
+        return result
+
+
+def _resolve_or_create_customer(cur, name, from_email) -> int:
+    cur.execute(
+        """
+        SELECT id FROM customers
+        WHERE lower(name) = lower(%s)
+           OR (length(%s) > 3 AND lower(contact) LIKE '%%' || lower(%s) || '%%')
+        ORDER BY id LIMIT 1
+        """,
+        (name, from_email, from_email),
+    )
+    row = cur.fetchone()
+    if row:
+        return row["id"]
+    cur.execute(
+        "INSERT INTO customers (name, contact, terms) VALUES (%s, %s, 'Net 30') RETURNING id",
+        (name[:120] or from_email[:120] or "Email customer", from_email[:120]),
+    )
+    return cur.fetchone()["id"]
+
+
+def process_new_emails() -> int:
+    """Classify every unprocessed email; draft unposted sales orders for
+    the ones the clerk reads as product orders. Returns drafts created."""
+    drafted = 0
+    with psycopg.connect(require_database_url(), row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT name FROM customers ORDER BY name")
+            customers = [row["name"] for row in cur.fetchall()]
+            cur.execute("SELECT sku, list_price FROM price_list ORDER BY sku")
+            prices = {row["sku"]: float(row["list_price"]) for row in cur.fetchall()}
+            cur.execute("SELECT * FROM inbound_emails WHERE status = 'new' ORDER BY id LIMIT 10")
+            emails = cur.fetchall()
+            for row in emails:
+                cls = classify_order_email(row, customers, list(prices))
+                lines = [
+                    {"sku": l.get("sku"), "quantity": int(l.get("quantity", 0))}
+                    for l in (cls.get("lines") or [])
+                    if l.get("sku") in prices and int(l.get("quantity", 0)) > 0
+                ]
+                is_order = (
+                    bool(cls.get("is_order"))
+                    and float(cls.get("confidence", 0)) >= INTAKE_CONFIDENCE_THRESHOLD
+                    and lines
+                )
+                if is_order:
+                    customer_id = _resolve_or_create_customer(
+                        cur, str(cls.get("customer_name", "")).strip(), row["from_email"]
+                    )
+                    so_no = _next_sales_number(cur, "sales_orders", "so_no", "SO-")
+                    requested = cls.get("requested_date") or None
+                    cur.execute(
+                        """
+                        INSERT INTO sales_orders (so_no, customer_id, status, requested_date, source_email_id)
+                        VALUES (%s, %s, 'draft', %s, %s) RETURNING id
+                        """,
+                        (so_no, customer_id, requested, row["id"]),
+                    )
+                    so_id = cur.fetchone()["id"]
+                    for line in lines:
+                        cur.execute(
+                            """
+                            INSERT INTO sales_order_lines (sales_order_id, sku, quantity, unit_price)
+                            VALUES (%s, %s, %s, %s)
+                            """,
+                            (so_id, line["sku"], line["quantity"], prices[line["sku"]]),
+                        )
+                    cur.execute(
+                        """
+                        UPDATE inbound_emails
+                        SET status = 'order_drafted', classification = %s,
+                            sales_order_id = %s, processed_at = now()
+                        WHERE id = %s
+                        """,
+                        (json.dumps(cls), so_id, row["id"]),
+                    )
+                    drafted += 1
+                else:
+                    cur.execute(
+                        """
+                        UPDATE inbound_emails
+                        SET status = 'not_order', classification = %s, processed_at = now()
+                        WHERE id = %s
+                        """,
+                        (json.dumps(cls), row["id"]),
+                    )
+        conn.commit()
+    return drafted
+
+
+def _so_lines_and_availability(cur, so_id) -> dict:
+    cur.execute(
+        "SELECT sku, quantity, unit_price FROM sales_order_lines WHERE sales_order_id = %s ORDER BY id",
+        (so_id,),
+    )
+    lines = cur.fetchall()
+    required: dict[str, int] = {}
+    for line in lines:
+        required[line["sku"]] = required.get(line["sku"], 0) + line["quantity"]
+    availability = []
+    fulfillable = True
+    for sku, quantity in required.items():
+        cur.execute(
+            "SELECT COALESCE(SUM(quantity_on_hand), 0) AS on_hand FROM inventory_items WHERE part_number = %s",
+            (sku,),
+        )
+        on_hand = float(cur.fetchone()["on_hand"])
+        short = max(quantity - on_hand, 0)
+        if short > 0:
+            fulfillable = False
+        availability.append({"sku": sku, "required": quantity, "on_hand": on_hand, "short": short})
+    return {"lines": lines, "availability": availability, "fulfillable": fulfillable}
+
+
+def _ship_so(so_no: str) -> dict | None:
+    """Ship an SO already flipped to 'open'; on a stock race, park it back
+    as a backorder instead of leaving it stranded."""
+    try:
+        return ship_and_invoice({"soNo": so_no})
+    except ValueError:
+        with psycopg.connect(require_database_url(), row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE sales_orders SET status = 'backorder' WHERE so_no = %s AND status = 'open'",
+                    (so_no,),
+                )
+            conn.commit()
+        return None
+
+
+def accept_intake_order(payload: dict) -> dict:
+    """Operator accepts a drafted SO: fulfillable -> ship & invoice now;
+    short -> backorder + production orders for the finished-goods shortfall."""
+    so_no = str(payload.get("soNo", "")).strip()
+    if not so_no:
+        raise ValueError("soNo is required.")
+    with psycopg.connect(require_database_url(), row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, status, requested_date FROM sales_orders WHERE so_no = %s", (so_no,))
+            so = cur.fetchone()
+            if not so:
+                raise ValueError(f"Unknown sales order {so_no}.")
+            if so["status"] != "draft":
+                raise ValueError(f"{so_no} is {so['status']}; only drafts can be accepted.")
+            check = _so_lines_and_availability(cur, so["id"])
+            new_status = "open" if check["fulfillable"] else "backorder"
+            cur.execute(
+                "UPDATE sales_orders SET status = %s, accepted_at = now() WHERE id = %s",
+                (new_status, so["id"]),
+            )
+        conn.commit()
+
+    if check["fulfillable"]:
+        invoice = _ship_so(so_no)
+        if invoice:
+            return {"soNo": so_no, "outcome": "invoiced", "invoice": invoice}
+        return {"soNo": so_no, "outcome": "backorder", "built": []}
+
+    # Backorder: build the finished-goods shortfall through the plant.
+    built = []
+    today = datetime.now(timezone.utc).date()
+    requested = so["requested_date"]
+    due = requested if requested and requested > today else today + timedelta(days=7)
+    for row in check["availability"]:
+        if row["short"] > 0 and row["sku"] in FG_STOCK_ZONES:
+            snapshot = create_order({
+                "finishedSku": row["sku"],
+                "quantity": int(math.ceil(row["short"])),
+                "dueDate": due.isoformat(),
+            })
+            built.append({"orderNo": snapshot["order"]["order_no"], "sku": row["sku"],
+                          "quantity": int(math.ceil(row["short"]))})
+    return {"soNo": so_no, "outcome": "backorder", "built": built}
+
+
+def reject_intake_order(payload: dict) -> dict:
+    so_no = str(payload.get("soNo", "")).strip()
+    if not so_no:
+        raise ValueError("soNo is required.")
+    with psycopg.connect(require_database_url(), row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE sales_orders SET status = 'rejected' WHERE so_no = %s AND status = 'draft' RETURNING id",
+                (so_no,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"{so_no} is not a draft (or does not exist).")
+            cur.execute(
+                "UPDATE inbound_emails SET status = 'rejected' WHERE sales_order_id = %s",
+                (row["id"],),
+            )
+        conn.commit()
+    return {"soNo": so_no, "outcome": "rejected"}
+
+
+def process_backorders() -> list[dict]:
+    """Re-test every backorder; ship the ones whose requirements are met."""
+    shipped = []
+    with psycopg.connect(require_database_url(), row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, so_no FROM sales_orders WHERE status = 'backorder' ORDER BY id")
+            backorders = cur.fetchall()
+            ready = []
+            for so in backorders:
+                if _so_lines_and_availability(cur, so["id"])["fulfillable"]:
+                    cur.execute("UPDATE sales_orders SET status = 'open' WHERE id = %s", (so["id"],))
+                    ready.append(so["so_no"])
+        conn.commit()
+    for so_no in ready:
+        invoice = _ship_so(so_no)
+        if invoice:
+            shipped.append(invoice)
+    return shipped
+
+
+def run_intake_cycle(poll_mailbox: bool = True) -> dict:
+    """One full intake pass: advance the plant simulation, pull the mailbox,
+    classify new emails, re-test backorders."""
+    with psycopg.connect(require_database_url(), row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            run_simulation_sync(cur)
+        conn.commit()
+    fetched = 0
+    if poll_mailbox and imap_configured():
+        fetched = fetch_mailbox()
+    drafted = process_new_emails()
+    shipped = process_backorders()
+    result = {"fetched": fetched, "drafted": drafted, "shipped": [s["invoiceNo"] for s in shipped]}
+    _intake_note(last_poll=datetime.now(timezone.utc).isoformat(), last_error=None, last_result=result)
+    return result
+
+
+def intake_worker() -> None:
+    """Background loop: mailbox + classification + backorder fulfillment.
+    Runs even without IMAP configured (backorders still self-fulfill)."""
+    while True:
+        try:
+            run_intake_cycle()
+        except Exception as exc:
+            _intake_note(last_poll=datetime.now(timezone.utc).isoformat(), last_error=str(exc))
+        time.sleep(INTAKE_POLL_SECONDS)
+
+
+def submit_test_email(payload: dict) -> dict:
+    """Inject an email as if it arrived by IMAP (testing/webhook path),
+    then classify it immediately."""
+    from_name = str(payload.get("fromName", "")).strip()
+    from_email = str(payload.get("fromEmail", "")).strip()
+    subject = str(payload.get("subject", "")).strip()
+    body = str(payload.get("body", "")).strip()
+    if not (subject or body):
+        raise ValueError("An email needs a subject or body.")
+    with psycopg.connect(require_database_url(), row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            email_id = store_inbound_email(
+                cur, f"<test-{uuid.uuid4()}@intake.local>", from_name, from_email, subject, body
+            )
+        conn.commit()
+    drafted = process_new_emails()
+    with psycopg.connect(require_database_url(), row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT status, classification, sales_order_id FROM inbound_emails WHERE id = %s", (email_id,))
+            row = cur.fetchone()
+    return {"emailId": email_id, "status": row["status"], "drafted": drafted,
+            "classification": json.loads(row["classification"]) if row["classification"] else None}
+
+
+def fetch_intake() -> dict:
+    with psycopg.connect(require_database_url(), row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('inbound_emails') AS reg")
+            if cur.fetchone()["reg"] is None:
+                raise ValueError("Intake tables are not installed yet.")
+            cur.execute(
+                """
+                SELECT e.id, e.from_name, e.from_email, e.subject, e.received_at,
+                       e.status, e.classification, so.so_no
+                FROM inbound_emails e
+                LEFT JOIN sales_orders so ON so.id = e.sales_order_id
+                ORDER BY e.id DESC LIMIT 40
+                """
+            )
+            emails = cur.fetchall()
+            for row in emails:
+                row["classification"] = json.loads(row["classification"]) if row["classification"] else None
+            cur.execute(
+                """
+                SELECT so.id, so.so_no, so.status, so.requested_date, so.accepted_at,
+                       so.created_at, c.name AS customer, e.subject AS email_subject
+                FROM sales_orders so
+                JOIN customers c ON c.id = so.customer_id
+                LEFT JOIN inbound_emails e ON e.id = so.source_email_id
+                WHERE so.status IN ('draft', 'backorder')
+                ORDER BY so.id DESC LIMIT 40
+                """
+            )
+            queue = cur.fetchall()
+            for so in queue:
+                check = _so_lines_and_availability(cur, so["id"])
+                so["lines"] = check["lines"]
+                so["availability"] = check["availability"]
+                so["fulfillable"] = check["fulfillable"]
+                so["value"] = round(sum(float(l["unit_price"]) * l["quantity"] for l in check["lines"]), 2)
+            # Units currently being built per finished SKU, for backorder context.
+            cur.execute(
+                """
+                SELECT m.sku, COALESCE(SUM(po.quantity), 0) AS building
+                FROM production_orders po
+                JOIN materials m ON m.id = po.finished_material_id
+                WHERE po.status NOT IN ('complete', 'cancelled')
+                GROUP BY m.sku
+                """
+            )
+            building = {row["sku"]: float(row["building"]) for row in cur.fetchall()}
+    with _INTAKE_STATE_LOCK:
+        state = dict(_INTAKE_STATE)
+    return {
+        "emails": emails,
+        "queue": queue,
+        "building": building,
+        "mailbox": {
+            "configured": imap_configured(),
+            "host_set": bool(os.environ.get("IMAP_HOST")),
+            "user_set": bool(os.environ.get("IMAP_USER")),
+            "poll_seconds": INTAKE_POLL_SECONDS,
+            **state,
+        },
     }
 
 
@@ -5092,6 +5636,7 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
             "/api/costing/accounts",
             "/api/sales",
             "/api/purchasing",
+            "/api/intake",
             "/api/audit/package",
             "/api/audit/certifications",
         ):
@@ -5122,6 +5667,8 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
                     payload = fetch_sales()
                 elif path == "/api/purchasing":
                     payload = fetch_purchasing()
+                elif path == "/api/intake":
+                    payload = fetch_intake()
                 elif path == "/api/audit/package":
                     payload = build_audit_package()
                 elif path == "/api/audit/certifications":
@@ -5180,6 +5727,10 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
             "/api/purchasing/preferred",
             "/api/purchasing/order",
             "/api/purchasing/receive",
+            "/api/intake/email",
+            "/api/intake/check",
+            "/api/intake/accept",
+            "/api/intake/reject",
             "/api/audit/certify",
             "/api/schedule/preview",
             "/api/schedule/max-output",
@@ -5244,6 +5795,18 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
             if path == "/api/purchasing/receive":
                 json_response(self, HTTPStatus.OK, receive_vendor_po(payload))
                 return
+            if path == "/api/intake/email":
+                json_response(self, HTTPStatus.OK, submit_test_email(payload))
+                return
+            if path == "/api/intake/check":
+                json_response(self, HTTPStatus.OK, run_intake_cycle())
+                return
+            if path == "/api/intake/accept":
+                json_response(self, HTTPStatus.OK, accept_intake_order(payload))
+                return
+            if path == "/api/intake/reject":
+                json_response(self, HTTPStatus.OK, reject_intake_order(payload))
+                return
             if path == "/api/audit/certify":
                 json_response(self, HTTPStatus.OK, run_audit_certification(payload))
                 return
@@ -5270,6 +5833,9 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
 def main() -> None:
     port = int(os.environ.get("PORT", "8000"))
     server = ThreadingHTTPServer(("127.0.0.1", port), ManufacturingHandler)
+    # Order-intake worker: mailbox polling (if configured), email
+    # classification, and backorder fulfillment run in the background.
+    threading.Thread(target=intake_worker, daemon=True).start()
     print(f"Manufacturing app running at http://127.0.0.1:{port}/production-orders.html")
     server.serve_forever()
 
