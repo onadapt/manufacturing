@@ -151,10 +151,12 @@
             title: "Why history can't be edited",
             body:
               "<p>Certifications — like the cost ledger itself — are protected by a database trigger that " +
-              "rejects any modification (<em>“Cost ledger entries are immutable”</em>). They also survive " +
-              "Reset Activity: the demo floor can be wiped, the audit history cannot.</p>" +
-              "<p>Corrections are made the proper way: by posting a new, memo'd adjusting journal entry — " +
-              "never by altering what was recorded.</p>"
+              "rejects any modification (<em>“Cost ledger entries are immutable”</em>). Corrections are made " +
+              "the proper way: by posting a new, memo'd adjusting journal entry — never by altering what was " +
+              "recorded.</p>" +
+              "<p><strong>Development mode:</strong> Reset Activity currently purges ALL transaction history, " +
+              "including certifications and the standards change log, for a clean development slate. " +
+              "Certification permanence (audit history surviving reset) will be re-enabled for production.</p>"
           },
           {
             title: "The accounting basis",
