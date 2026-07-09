@@ -743,9 +743,15 @@ BEGIN
   DELETE FROM work_orders;
   DELETE FROM station_signoffs;
   -- Cost ledger resets with activity (including the opening-balance entry,
-  -- so costing re-initializes from restored stock); standards, rates, and
-  -- the standards audit trail persist as master data.
+  -- so costing re-initializes from restored stock). Standards and rates
+  -- persist as master data.
   DELETE FROM cost_entries;
+  -- DEVELOPMENT MODE: purge ALL transaction history, including audit
+  -- certifications and the standards change log. Certification permanence
+  -- ("audit history survives reset") is intentionally disabled during
+  -- development and will be restored before production hardening.
+  DELETE FROM audit_certifications;
+  DELETE FROM standards_audit;
 
   UPDATE inventory_items AS i
   SET quantity_on_hand = baseline.on_hand,
