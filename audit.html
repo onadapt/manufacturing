@@ -132,10 +132,10 @@
               "<li><strong>A-TB-*</strong> — trial balance: total debits equal total credits.</li>" +
               "<li><strong>A-JE-*</strong> — journal entries: every entry balances; entry references are unique.</li>" +
               "<li><strong>A-CT-*</strong> — the six live tie-out controls from the Costing page (books in " +
-              "balance, entries balanced, WIP/case/drone GL ties, ledger immutability).</li>" +
+              "balance, entries balanced, WIP/subassembly/FG GL ties, ledger immutability).</li>" +
               "<li><strong>A-CC-*</strong> — cost cards: DM + DL + OH equals the unit standard for each product.</li>" +
               "<li><strong>A-VR-*</strong> — variances: PPV + usage + labor rate + labor efficiency + overhead " +
-              "equals the total for every completed order, and drone unit PPV is constant across order sizes.</li>" +
+              "equals the total for every completed order, and finished-unit PPV is constant across order sizes.</li>" +
               "</ul>" +
               "<p>Each row shows the expected value, the actual value, and PASS/FAIL. Money comparisons " +
               "tolerate one cent of rounding.</p>"
@@ -152,7 +152,7 @@
             body:
               "<p><strong>claude</strong> — the LLM auditor independently reperforms the work before opining: " +
               "it refoots the trial balance, verifies every entry, rebuilds both cost cards from the standards " +
-              "inputs (including the case card rolling into the drone card), and verifies every variance " +
+              "inputs (including the case card rolling into the finished-good card), and verifies every variance " +
               "identity. It can also raise findings of its own beyond the built-in assertions.</p>" +
               "<p><strong>offline</strong> — when no LLM is available, a deterministic self-certification runs " +
               "from the assertions alone: material failures (trial balance or entry balance) produce ADVERSE; " +

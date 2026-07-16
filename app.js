@@ -1,5 +1,5 @@
 // Per-page floor config: case-floor.html sets window.FLOOR_CONFIG before this
-// script loads; index.html omits it and gets the drone floor defaults below.
+// script loads; index.html omits it and gets the assembly floor defaults below.
 const floorConfig = window.FLOOR_CONFIG ?? {};
 
 const zones = floorConfig.zones ?? {
