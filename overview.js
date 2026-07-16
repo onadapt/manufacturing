@@ -13,7 +13,7 @@ const completedTitle = document.querySelector("#completedTitle");
 const completedDetail = document.querySelector("#completedDetail");
 const activityBody = document.querySelector("#activityBody");
 
-const LINE_NAMES = { 1: "Drone floor", 2: "Case line" };
+const LINE_NAMES = { 1: "Assembly floor", 2: "Case line" };
 
 function titleCase(value) {
   return value

@@ -23,13 +23,13 @@ ACTIVE_STATUSES = ("planned", "released", "in_progress", "hold")
 DEFAULT_FINISHED_SKU = "DRN-FG-600"
 ORDER_PREFIXES = {"DRN-FG-600": "DRN-PO-", "CASE-FG-500": "CASE-PO-"}
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
-# Stamped on drone build records at completion (cases carry no firmware).
+# Stamped on finished-good build records at completion (cases carry no firmware).
 DRONE_FIRMWARE_VERSION = os.environ.get("DRONE_FIRMWARE_VERSION", "FW 4.2.1")
 ASK_AI_SYSTEM = (
-    "You are the Ask AI assistant embedded in the Operations Overview of a drone "
-    "manufacturing demo plant. The plant has two production lines: the drone floor "
-    "(builds DRN-FG-600 packaged inspection drones) and the case line (builds "
-    "CASE-FG-500 transport cases, stocked into Case Inventory and pulled by drone "
+    "You are the Ask AI assistant embedded in the Operations Overview of a "
+    "manufacturing demo plant. The plant has two production lines: the assembly floor "
+    "(builds the finished good DRN-FG-600) and the case line (builds "
+    "CASE-FG-500 transport cases, stocked into Case Inventory and pulled at "
     "packaging; shortages auto-create replenishment case orders). Answer questions "
     "using ONLY the live data snapshot provided with each question. Be concise and "
     "operational. Use markdown bullet lists or small tables when they help. If the "
@@ -550,7 +550,7 @@ def sync_workstation_ledger(cur, order: dict, simulation: dict) -> None:
 def post_completion_inventory(cur, order: dict, final_zone_id: str) -> None:
     """Book a completed order into stock and consume its inventory-pull components."""
     # Receive the finished quantity into stock at the route's final zone, so
-    # completed case orders raise Case Inventory available for drone packaging pull.
+    # completed case orders raise Case Inventory available for packaging pull.
     cur.execute(
         """
         UPDATE inventory_items
@@ -593,7 +593,7 @@ def post_completion_inventory(cur, order: dict, final_zone_id: str) -> None:
 
     # Newly stocked finished goods satisfy waiting short pull lines (oldest
     # order first), so a replenishment case order landing in Case Inventory
-    # automatically allocates to the drone order that triggered it.
+    # automatically allocates to the finished-good order that triggered it.
     cur.execute(
         """
         SELECT pom.id, pom.part_number, pom.required_quantity, pom.unit,
@@ -957,7 +957,7 @@ def fetch_floor_dashboard(facility_id: int = 1) -> dict:
             }
 
             # Simulate every facility so case-line orders keep completing and
-            # posting inventory even when only the drone floor map is open.
+            # posting inventory even when only the assembly floor map is open.
             all_states = simulate_active_states(cur)
             if not all_states:
                 return {
@@ -2239,7 +2239,7 @@ def station_conversion(card, costing, quantity) -> list[dict]:
 
 
 def ensure_opening_entry(cur, costing) -> None:
-    """Book opening inventory once: RM at actual, cases and drones at standard."""
+    """Book opening inventory once: RM at actual, cases and finished goods at standard."""
     cur.execute("SELECT 1 FROM cost_entries WHERE event_ref = 'OPENING-BAL'")
     if cur.fetchone():
         return
@@ -2779,7 +2779,7 @@ def fetch_trial_balance() -> dict:
                     f"GL {case_gl:,.2f} vs stock less in-flight pulls {case_expected:,.2f}",
                 ),
                 control(
-                    "Drone FG GL ties to drone stock at standard",
+                    "Finished goods GL ties to FG stock at standard",
                     abs(fg_gl - fg_expected) <= 1,
                     f"GL {fg_gl:,.2f} vs stock at standard {fg_expected:,.2f}",
                 ),
@@ -3482,7 +3482,7 @@ def fetch_purchasing() -> dict:
             for offer in catalog:
                 offer["breaks"] = breaks_by_offer.get(offer["id"], [])
 
-            # Per-finished-drone usage of each buy part; the transport case is
+            # Per-finished-unit usage of each buy part; the transport case is
             # consumed 1:1 by the drone, so case buy parts roll in directly.
             cur.execute(
                 """
@@ -3948,7 +3948,7 @@ _INTAKE_STATE: dict = {"last_poll": None, "last_error": None, "last_result": Non
 _INTAKE_STATE_LOCK = threading.Lock()
 
 INTAKE_SYSTEM = (
-    "You are the order-desk clerk for a drone manufacturing plant. You receive "
+    "You are the order-desk clerk for a manufacturing plant. You receive "
     "one inbound email plus the sellable SKUs and known customers. Decide whether "
     "the email is a PRODUCT ORDER (a request to buy finished goods). Quotes, "
     "spam, questions, complaints, vendor mail, and job applications are NOT "
@@ -4504,7 +4504,7 @@ def fetch_intake() -> dict:
 # certifications stored immutably.
 
 AUDIT_SYSTEM = (
-    "You are the internal auditor for a drone manufacturing plant's standard "
+    "You are the internal auditor for a manufacturing plant's standard "
     "absorption costing system (RM at actual with PPV at issue; WIP and finished "
     "stock at standard; per-role labor rates; overhead at 25% of direct labor; "
     "immutable double-entry cost ledger). You receive the complete audit evidence "
@@ -4513,9 +4513,9 @@ AUDIT_SYSTEM = (
     "entry's debits equal its credits from the entry list; (3) rebuild both standard "
     "cost cards from the standards inputs (material qty x standard cost, labor "
     "minutes x rate / 60, overhead pct of direct labor, the case card rolling into "
-    "the drone card) and agree them to the system cards; (4) verify each completed "
+    "the finished-good card) and agree them to the system cards; (4) verify each completed "
     "order's variance identity (ppv + usage + labor_rate + labor_efficiency + oh = "
-    "total) and that drone unit PPV is consistent across order sizes; (5) evaluate "
+    "total) and that finished-unit PPV is consistent across order sizes; (5) evaluate "
     "the control results, the assertions list, the standards change log, and the "
     "non-routine entries (opening, revaluations, adjustments) for propriety and "
     "internal contradictions. Then respond with ONLY a JSON object, no markdown "
@@ -4625,14 +4625,14 @@ def build_audit_package() -> dict:
         {round(float(oc["ppv"]) / oc["quantity"], 2) for oc in variances["orders"] if oc["sku"] == "DRN-FG-600"}
     )
     if len(drone_unit_ppv) > 1:
-        audit_assert(assertions, "A-VR-02", "Drone unit PPV constant across order sizes (spread)",
+        audit_assert(assertions, "A-VR-02", "Finished-unit PPV constant across order sizes (spread)",
                      0, round(drone_unit_ppv[-1] - drone_unit_ppv[0], 2), 0.01)
     elif drone_unit_ppv:
-        audit_assert(assertions, "A-VR-02", "Drone unit PPV constant across order sizes", True, True)
+        audit_assert(assertions, "A-VR-02", "Finished-unit PPV constant across order sizes", True, True)
 
     package = {
         "meta": {
-            "entity": "Drone Manufacturing Demo Plant (drones.onadapt.com)",
+            "entity": "Manufacturing Demo Plant (drones.onadapt.com)",
             "report": "Internal audit package - standard costing cycle",
             "as_of": datetime.now(timezone.utc).isoformat(),
             "basis": (
@@ -4824,7 +4824,7 @@ AGENT_TOOL_SPECS = [
      "description": "Both production lines' live schedule: per-station capacity/cycle/max-rate/bottleneck and every active order with status, priority, and projected start/finish. Read-only.",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_station",
-     "description": "One station's detail: vitals, utilization, upcoming orders, and parts stocked there. Zone ids: drone line receiving, raw, ws1..ws5, fg, inventory; case line case_receiving, case_raw, cws1..cws4, case_fg, case_inventory. Read-only.",
+     "description": "One station's detail: vitals, utilization, upcoming orders, and parts stocked there. Zone ids: assembly line receiving, raw, ws1..ws5, fg, inventory; case line case_receiving, case_raw, cws1..cws4, case_fg, case_inventory. Read-only.",
      "input_schema": {"type": "object", "properties": {
          "zone": {"type": "string", "description": "Zone id, e.g. ws4 or cws1."}}, "required": ["zone"]}},
     {"name": "check_kit",
@@ -4940,9 +4940,9 @@ AGENT_TOOL_SPECS = [
 
 def _agent_system() -> str:
     return (
-        "You are the Ask AI assistant inside a drone manufacturing demo plant "
-        "(drone line builds DRN-FG-600 packaged inspection drones; case line builds "
-        "CASE-FG-500 transport cases stocked into Case Inventory and pulled by drone "
+        "You are the Ask AI assistant inside a manufacturing demo plant "
+        "(the assembly line builds the finished good DRN-FG-600; the case line builds "
+        "CASE-FG-500 transport cases stocked into Case Inventory and pulled at "
         "packaging; shortages auto-create replenishment case orders). You can both "
         "ANSWER questions and TAKE ACTIONS by calling tools.\n"
         "- To answer, ground yourself in the live plant snapshot provided and the "
@@ -4951,7 +4951,7 @@ def _agent_system() -> str:
         "the operator to approve, so never claim something is done until you receive "
         "a tool result confirming it.\n"
         "- The costing system is standard absorption costing; positive variances are "
-        "unfavorable. Zone ids: drone line receiving, raw, ws1..ws5, fg, inventory; "
+        "unfavorable. Zone ids: assembly line receiving, raw, ws1..ws5, fg, inventory; "
         "case line case_receiving, case_raw, cws1..cws4, case_fg, case_inventory.\n"
         "- Sales: resolve customers and sales orders with get_sales before acting; "
         "ship_invoice requires the FULL order quantity in finished stock and posts "
@@ -5385,7 +5385,7 @@ def build_ask_ai_context() -> tuple[str, dict]:
     lines.append("Active orders:")
     if data["orders"]:
         for order in data["orders"]:
-            line_name = "drone floor" if order["facility_id"] == 1 else "case line"
+            line_name = "assembly floor" if order["facility_id"] == 1 else "case line"
             lines.append(
                 f"- {order['order_no']} ({order['finished_good']}, qty {order['quantity']}, {line_name}): "
                 f"{order['production_status']} at {order['current_zone']}, "

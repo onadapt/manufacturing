@@ -41,7 +41,7 @@ const balanceNotes = {
   "Case WS3: Hardware + Assembly": "Installs hinges, latches, handle, seal kit, and fasteners.",
   "Case WS4: Inspection + Label": "Inspects the finished case and applies serial and compliance labels.",
   "Case Finished Goods": "Holds accepted cases before stocking into Case Inventory.",
-  "Case Inventory": "Completed cases increase stock available for drone packaging pull."
+  "Case Inventory": "Completed cases increase stock available for packaging pull."
 };
 
 function titleCase(value) {

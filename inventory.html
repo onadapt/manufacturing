@@ -3,19 +3,19 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Drone Inventory Plan</title>
+    <title>Inventory Plan</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <main class="bom-shell">
       <header class="bom-header">
         <div>
-          <p class="eyebrow">Drone production</p>
+          <p class="eyebrow">Production</p>
           <h1>Inventory Plan</h1>
           <p class="bom-intro">
-            Inventory view for drone parts, production WIP, manufactured sub-assemblies, and finished goods areas.
+            Inventory view for purchased parts, production WIP, manufactured sub-assemblies, and finished goods areas.
             This defines what each area controls, where material sits, and what should trigger replenishment or
-            review. Case Inventory stocks finished transport cases from the case line for drone packaging pull.
+            review. Case Inventory stocks finished transport cases from the case line for packaging pull.
           </p>
         </div>
         <div class="bom-actions">
@@ -77,17 +77,17 @@
           <article>
             <span>Production</span>
             <strong>Station WIP</strong>
-            <p>Partially built drones move through Airframe, Electronics, Firmware, Motor Test, QA, and Packaged.</p>
+            <p>Partially built units move through Airframe, Electronics, Firmware, Motor Test, QA, and Packaged.</p>
           </article>
           <article>
             <span>Sub-assembly</span>
             <strong>Case Inventory</strong>
-            <p>Finished transport cases from the case line are stocked here and pulled by drone packaging.</p>
+            <p>Finished transport cases from the case line are stocked here and pulled at packaging.</p>
           </article>
           <article>
             <span>Finished goods</span>
             <strong>FG Inventory</strong>
-            <p>Accepted packaged drones are stored as available stock after final scan and location assignment.</p>
+            <p>Accepted packaged units are stored as available stock after final scan and location assignment.</p>
           </article>
           <article>
             <span>Rework</span>
@@ -97,7 +97,7 @@
         </div>
       </section>
 
-      <section class="bom-table-wrap" aria-label="Drone inventory table">
+      <section class="bom-table-wrap" aria-label="Inventory table">
         <table class="bom-table inventory-table">
           <thead>
             <tr>

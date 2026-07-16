@@ -58,7 +58,7 @@ async function loadLabor() {
     `Direct labor per station from the routing plan, plus ${Number(data.overhead_pct_total)}% indirect ` +
     data.overheads.map((o) => `${o.category.replaceAll("_", " ")} ${Number(o.pct)}%`).join(", ") + ".";
   laborTables.innerHTML =
-    laborTable("Drone line", data.lines.drone, data.totals.drone, data.overheads) +
+    laborTable("Assembly line", data.lines.drone, data.totals.drone, data.overheads) +
     laborTable("Case line", data.lines.case, data.totals.case, data.overheads);
 }
 
