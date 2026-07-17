@@ -125,6 +125,57 @@ def gl_get(path: str) -> dict:
     return data
 
 
+# ===== GL ledger adapter (Stage 1 of the GL-only refactor) =====
+# The engine-facing operations that replace the local cost_entries/cost_lines
+# ledger: post an entry, learn which refs are already posted (idempotency), read
+# an account balance, and read an account's net across one document reference
+# (for relieving WIP to exactly what an order absorbed). All go over the /v1 API.
+
+def posted_refs(company_id) -> set:
+    """The event_refs already in the GL for a company — the engine's idempotency
+    check (replaces `SELECT event_ref FROM cost_entries ...`)."""
+    return set(gl_get(f"/v1/journal-entries/refs?company={int(company_id)}").get("refs", []))
+
+
+def post_entry(company_id, ref, event_type, memo, lines, reference=None) -> bool:
+    """Post one balanced entry to the GL as a journal entry. `lines` is the
+    engine's (account, debit, credit) tuple list. Returns True if newly posted,
+    False if the ref already existed (idempotent). Replaces post_cost_entry's
+    local INSERTs."""
+    result = gl_post("/v1/journal-entries", {
+        "company": int(company_id), "ref": ref, "type": event_type,
+        "reference": reference, "memo": memo, "source": "manufacturing",
+        "lines": [{"account": account, "debit": round(debit, 2), "credit": round(credit, 2)}
+                  for account, debit, credit in lines],
+    })
+    return not result.get("duplicate", False)
+
+
+def account_balance(company_id, account_no) -> float:
+    """A single account's normal-side balance from the GL."""
+    data = gl_get(f"/v1/balances?company={int(company_id)}")
+    for row in data.get("accounts", []):
+        if row["account_no"] == account_no:
+            return float(row["balance"])
+    return 0.0
+
+
+def reference_net(company_id, reference, account_no) -> float:
+    """Net (debit - credit) of an account across every entry carrying a document
+    reference — used to relieve WIP to exactly what an order absorbed, even if a
+    standard changed mid-flight (replaces the cost_lines WIP read)."""
+    data = gl_get(
+        f"/v1/journal-entries?company={int(company_id)}"
+        f"&reference={quote(str(reference))}&limit=200"
+    )
+    total = 0.0
+    for entry in data.get("entries", []):
+        for line in entry.get("lines", []):
+            if line["account_no"] == account_no:
+                total += float(line["debit"]) - float(line["credit"])
+    return round(total, 2)
+
+
 def ledger(company_id, *, order_no=None, limit=30, before_id=None, event_type=None,
            date_from=None, date_to=None) -> dict:
     """The journal browser, served from the GL. Shapes match the local
