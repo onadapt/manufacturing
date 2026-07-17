@@ -43,73 +43,14 @@ def gl_post(path: str, body: dict) -> dict:
     return result
 
 
-def post_pending() -> None:
-    """Post every local ledger entry the GL doesn't yet hold as a real balanced
-    journal entry via POST /v1/journal-entries (idempotent by ref, so retries
-    and overlaps are safe). This is how Manufacturing writes to the GL. The
-    analytic tag overlay is a separate report-only layer synced by the GL-side
-    mirror, not part of the journal, so it isn't posted here. Raises on failure
-    so read-time callers fall back to the local ledger; the write path uses
-    push_best_effort() which swallows."""
-    if not enabled() or not LOCAL_DATABASE_URL:
-        return
-    with psycopg.connect(LOCAL_DATABASE_URL, row_factory=dict_row) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT DISTINCT company_id FROM cost_entries")
-            for cid in sorted(r["company_id"] for r in cur.fetchall()):
-                have = set(gl_get(f"/v1/journal-entries/refs?company={cid}").get("refs", []))
-                cur.execute(
-                    "SELECT id, event_ref, event_type, order_no, memo FROM cost_entries "
-                    "WHERE company_id = %s ORDER BY id",
-                    (cid,),
-                )
-                pending = [e for e in cur.fetchall() if e["event_ref"] not in have]
-                for entry in pending:
-                    cur.execute(
-                        "SELECT account_no, debit, credit FROM cost_lines "
-                        "WHERE entry_id = %s ORDER BY id",
-                        (entry["id"],),
-                    )
-                    lines = [
-                        {"account": l["account_no"], "debit": float(l["debit"]), "credit": float(l["credit"])}
-                        for l in cur.fetchall()
-                    ]
-                    gl_post("/v1/journal-entries", {
-                        "company": cid, "ref": entry["event_ref"], "type": entry["event_type"],
-                        "reference": entry["order_no"], "memo": entry["memo"],
-                        "source": "manufacturing", "lines": lines,
-                    })
-
-
-def sync_gl_now() -> None:
-    """Post pending local entries to the GL now so a GL-backed read is fresh.
-    Raises on failure so the caller falls back to the local ledger."""
-    post_pending()
-
-
-def push_best_effort() -> None:
-    """Dual-write: after a local ledger write, post it to the GL right away.
-    Never raises — the local write already succeeded and the next read/worker
-    cycle catches up. Only runs when reads are on the GL."""
-    if not enabled():
-        return
-    try:
-        post_pending()
-    except Exception:
-        pass
-
-
 def reset_gl() -> None:
-    """Reflect a dev-mode local purge in the GL: clear the tenant's journal via
-    POST /v1/reset (chart/companies persist), then re-post the fresh source. A
-    purge can't be conveyed by posting, so the clear goes whenever the GL is
-    configured. Best-effort."""
+    """A dev-mode reset clears the tenant's journal via POST /v1/reset
+    (chart/companies persist). The engine re-posts the opening balance and new
+    entries on the next simulation tick. Best-effort."""
     if not (GL_BASE_URL and GL_API_KEY):
         return
     try:
         gl_post("/v1/reset", {})
-        if enabled():
-            post_pending()
     except Exception:
         pass
 
@@ -174,6 +115,23 @@ def reference_net(company_id, reference, account_no) -> float:
             if line["account_no"] == account_no:
                 total += float(line["debit"]) - float(line["credit"])
     return round(total, 2)
+
+
+def all_entries(company_id) -> list:
+    """Every journal entry for a company (keyset-paged), with lines — for the
+    audit package, which tests 100% of the ledger."""
+    entries, before = [], None
+    while True:
+        path = f"/v1/journal-entries?company={int(company_id)}&limit=200"
+        if before:
+            path += f"&beforeId={before}"
+        data = gl_get(path)
+        batch = data.get("entries", [])
+        entries.extend(batch)
+        if not data.get("has_more") or not batch:
+            break
+        before = batch[-1]["id"]
+    return entries
 
 
 def ledger(company_id, *, order_no=None, limit=30, before_id=None, event_type=None,

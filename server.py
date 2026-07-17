@@ -2694,168 +2694,6 @@ def _ledger_date(value: str | None, label: str) -> str | None:
     return value
 
 
-def apply_auto_tags(cur, company_id: int = 1) -> None:
-    """Auto-tag cost lines from engine ground-truth — the plant already knows
-    each entry's product, cost center, customer, and vendor. Report-only:
-    writes only tag_distributions, never the immutable ledger. Idempotent
-    (only fills lines not yet tagged in a group), so it backfills history and
-    stays current. Keeps Customer/Vendor tags in sync with the subledgers."""
-    # Ensure a tag exists for every customer/vendor (new ones since seed).
-    cur.execute(
-        """
-        INSERT INTO account_tags (company_id, tag_group_id, name, reference)
-        SELECT c.company_id, g.id, c.name, c.account_code
-        FROM customers c JOIN tag_groups g ON g.company_id = c.company_id AND g.name = 'Customer'
-        WHERE c.company_id = %s AND c.account_code IS NOT NULL
-        ON CONFLICT DO NOTHING
-        """,
-        (company_id,),
-    )
-    cur.execute(
-        """
-        INSERT INTO account_tags (company_id, tag_group_id, name, reference)
-        SELECT v.company_id, g.id, v.name, v.account_code
-        FROM vendors v JOIN tag_groups g ON g.company_id = v.company_id AND g.name = 'Vendor'
-        WHERE v.company_id = %s AND v.account_code IS NOT NULL
-        ON CONFLICT DO NOTHING
-        """,
-        (company_id,),
-    )
-    # Each rule inserts a 100% distribution for lines not yet tagged in the group.
-    untagged = (
-        "NOT EXISTS (SELECT 1 FROM tag_distributions d JOIN account_tags at2 ON at2.id = d.account_tag_id "
-        "WHERE d.cost_line_id = l.id AND at2.tag_group_id = g.id)"
-    )
-    rules = [
-        # Product Line from the production order's finished good.
-        """
-        SELECT l.id, t.id, 100 FROM cost_lines l
-        JOIN cost_entries e ON e.id = l.entry_id
-        JOIN production_orders po ON po.id = e.production_order_id
-        JOIN materials m ON m.id = po.finished_material_id
-        JOIN tag_groups g ON g.company_id = e.company_id AND g.name = 'Product Line'
-        JOIN account_tags t ON t.tag_group_id = g.id AND t.reference = m.sku
-        WHERE e.company_id = %s AND {u}
-        """,
-        # Product Line from the account (COGS/subassembly/FG lines, no production order).
-        """
-        SELECT l.id, t.id, 100 FROM cost_lines l
-        JOIN cost_entries e ON e.id = l.entry_id
-        JOIN tag_groups g ON g.company_id = e.company_id AND g.name = 'Product Line'
-        JOIN account_tags t ON t.tag_group_id = g.id AND t.reference =
-             CASE WHEN l.account_no = '1330' THEN 'DRN-FG-600'
-                  WHEN l.account_no = '1315' THEN 'CASE-FG-500' END
-        WHERE e.company_id = %s AND l.account_no IN ('1330', '1315') AND {u}
-        """,
-        # Cost Center from the order-number prefix.
-        """
-        SELECT l.id, t.id, 100 FROM cost_lines l
-        JOIN cost_entries e ON e.id = l.entry_id
-        JOIN tag_groups g ON g.company_id = e.company_id AND g.name = 'Cost Center'
-        JOIN account_tags t ON t.tag_group_id = g.id AND t.name =
-             CASE WHEN e.order_no LIKE 'DRN-PO%%' THEN 'Assembly Line'
-                  WHEN e.order_no LIKE 'CASE-PO%%' THEN 'Case Line' END
-        WHERE e.company_id = %s AND (e.order_no LIKE 'DRN-PO%%' OR e.order_no LIKE 'CASE-PO%%') AND {u}
-        """,
-        # Customer from the invoice.
-        """
-        SELECT l.id, t.id, 100 FROM cost_lines l
-        JOIN cost_entries e ON e.id = l.entry_id
-        JOIN invoices inv ON inv.invoice_no = e.order_no
-        JOIN customers c ON c.id = inv.customer_id
-        JOIN tag_groups g ON g.company_id = e.company_id AND g.name = 'Customer'
-        JOIN account_tags t ON t.tag_group_id = g.id AND t.reference = c.account_code
-        WHERE e.company_id = %s AND e.event_type IN ('revenue', 'cogs') AND {u}
-        """,
-        # Vendor from the received PO.
-        """
-        SELECT l.id, t.id, 100 FROM cost_lines l
-        JOIN cost_entries e ON e.id = l.entry_id
-        JOIN purchase_orders p ON p.po_no = e.order_no
-        JOIN vendors v ON v.id = p.vendor_id
-        JOIN tag_groups g ON g.company_id = e.company_id AND g.name = 'Vendor'
-        JOIN account_tags t ON t.tag_group_id = g.id AND t.reference = v.account_code
-        WHERE e.company_id = %s AND e.event_type = 'po_receipt' AND {u}
-        """,
-    ]
-    for rule in rules:
-        cur.execute(
-            "INSERT INTO tag_distributions (cost_line_id, account_tag_id, percentage) "
-            + rule.format(u=untagged)
-            + " AND t.id IS NOT NULL ON CONFLICT DO NOTHING",
-            (company_id,),
-        )
-
-    # Product Line SPLIT on the aggregate revenue (4000) and COGS (5010)
-    # lines — these are single lines per invoice, so they carry a proportional
-    # multi-tag distribution instead of one 100% tag. This is what makes the
-    # Product Line dimension show revenue/COGS/margin. (Idempotent via the
-    # (cost_line_id, account_tag_id) unique + ON CONFLICT DO NOTHING; % is
-    # deterministic from the same source amounts.)
-    # Revenue split by the sales-order lines' per-SKU value.
-    cur.execute(
-        """
-        WITH rev_split AS (
-          SELECT e.id AS entry_id, sol.sku, SUM(sol.quantity * sol.unit_price) AS amt
-          FROM cost_entries e
-          JOIN invoices inv ON inv.invoice_no = e.order_no
-          JOIN sales_order_lines sol ON sol.sales_order_id = inv.sales_order_id
-          WHERE e.company_id = %s AND e.event_type = 'revenue'
-          GROUP BY e.id, sol.sku
-        ),
-        rev_total AS (SELECT entry_id, SUM(amt) AS total FROM rev_split GROUP BY entry_id)
-        INSERT INTO tag_distributions (cost_line_id, account_tag_id, percentage)
-        SELECT sl.id, t.id, ROUND(100.0 * rs.amt / rt.total, 4)
-        FROM rev_split rs
-        JOIN rev_total rt ON rt.entry_id = rs.entry_id
-        JOIN cost_lines sl ON sl.entry_id = rs.entry_id AND sl.account_no = '4000'
-        JOIN tag_groups g ON g.company_id = %s AND g.name = 'Product Line'
-        JOIN account_tags t ON t.tag_group_id = g.id AND t.reference = rs.sku
-        WHERE rt.total > 0
-        ON CONFLICT DO NOTHING
-        """,
-        (company_id, company_id),
-    )
-    # COGS split by the sibling 1330/1315 credits in the same entry.
-    cur.execute(
-        """
-        WITH cogs_split AS (
-          SELECT e.id AS entry_id, cl.account_no, SUM(cl.credit) AS amt
-          FROM cost_entries e
-          JOIN cost_lines cl ON cl.entry_id = e.id
-          WHERE e.company_id = %s AND e.event_type = 'cogs'
-            AND cl.account_no IN ('1330', '1315') AND cl.credit > 0
-          GROUP BY e.id, cl.account_no
-        ),
-        cogs_total AS (SELECT entry_id, SUM(amt) AS total FROM cogs_split GROUP BY entry_id)
-        INSERT INTO tag_distributions (cost_line_id, account_tag_id, percentage)
-        SELECT dl.id, t.id, ROUND(100.0 * cs.amt / ct.total, 4)
-        FROM cogs_split cs
-        JOIN cogs_total ct ON ct.entry_id = cs.entry_id
-        JOIN cost_lines dl ON dl.entry_id = cs.entry_id AND dl.account_no = '5010'
-        JOIN tag_groups g ON g.company_id = %s AND g.name = 'Product Line'
-        JOIN account_tags t ON t.tag_group_id = g.id AND t.reference =
-             CASE WHEN cs.account_no = '1330' THEN 'DRN-FG-600' ELSE 'CASE-FG-500' END
-        WHERE ct.total > 0
-        ON CONFLICT DO NOTHING
-        """,
-        (company_id, company_id),
-    )
-
-
-def refresh_source_tags(company_id: int) -> None:
-    """Keep the local analytic-tag overlay current when the reporting pages are
-    served from the GL. apply_auto_tags normally runs on the local read paths
-    (fetch_cost_ledger / fetch_analytics) that GL_READS bypasses; the mirror
-    then copies the fresh tags into the GL. Best-effort."""
-    with psycopg.connect(require_database_url(), row_factory=dict_row) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT to_regclass('tag_distributions') AS reg")
-            if cur.fetchone()["reg"] is not None:
-                apply_auto_tags(cur, company_id)
-        conn.commit()
-
-
 def fetch_cost_ledger(
     order_no: str | None,
     limit: int,
@@ -2871,10 +2709,6 @@ def fetch_cost_ledger(
         with conn.cursor() as cur:
             if not costing_ready(cur):
                 raise ValueError("Costing tables are not installed yet.")
-            cur.execute("SELECT to_regclass('tag_distributions') AS reg")
-            if cur.fetchone()["reg"] is not None:
-                apply_auto_tags(cur, company_id)
-                conn.commit()
             clauses: list[str] = ["e.company_id = %s"]
             params: list[object] = [company_id]
             if order_no:
@@ -3137,7 +2971,8 @@ def gl_trial_balance(company_id) -> dict:
             if is_plant:
                 expected = _plant_expected_values(cur, states, costing)
 
-    gl_backed.sync_gl_now()  # make the GL fresh before reading its balances
+    # The engine posted every entry to the GL directly during run_simulation_sync,
+    # so the GL is already current — read it.
     gl = gl_backed.gl_get(f"/v1/trial-balance?company={company_id}")
     balances = gl["accounts"]
     total_debit = float(gl["total_debit"])
@@ -3182,8 +3017,6 @@ def fetch_analytics(company_id: int = 1, group_name: str | None = None) -> dict:
             cur.execute("SELECT to_regclass('tag_groups') AS reg")
             if cur.fetchone()["reg"] is None:
                 return {"groups": [], "group": None, "rows": [], "totals": {}}
-            apply_auto_tags(cur, company_id)
-            conn.commit()
             cur.execute(
                 "SELECT id, name, color FROM tag_groups WHERE company_id = %s ORDER BY id",
                 (company_id,),
@@ -4968,14 +4801,8 @@ def intake_worker() -> None:
                 last_poll=datetime.now(timezone.utc).isoformat(),
                 last_error=_mailbox_error_text(exc),
             )
-        # Propagate any headless postings (sim advance, backorders) to the GL as
-        # journal entries, so the shared books stay current without a page open.
-        try:
-            if gl_backed.enabled():
-                refresh_source_tags(1)
-                gl_backed.push_best_effort()
-        except Exception:
-            pass
+        # (The engine posts every entry to the GL directly at compute time, so
+        # there's nothing to propagate here.)
         time.sleep(INTAKE_POLL_SECONDS)
 
 
@@ -5110,26 +4937,36 @@ def audit_assert(assertions: list, check_id: str, description: str, expected, ac
 
 
 def build_audit_package() -> dict:
-    """The full audit evidence package, self-describing and machine-checkable."""
-    tb = fetch_trial_balance()  # also drives the simulation sync
+    """The full audit evidence package, self-describing and machine-checkable.
+    The ledger (entries, per-entry footings, non-routine journals) is read from
+    the shared GL — the system of record — via its /v1 API."""
+    tb = gl_trial_balance(1)  # also drives the simulation sync
     cards = fetch_cost_cards()["cards"]
     variances = fetch_variance_report()
+
+    gl_entries = gl_backed.all_entries(1)
+    entries = [
+        {
+            "event_ref": e["event_ref"], "event_type": e["event_type"],
+            "order_no": e.get("reference"), "posted_at": e["posted_at"],
+            "debits": round(sum(float(l["debit"]) for l in e["lines"]), 2),
+            "credits": round(sum(float(l["credit"]) for l in e["lines"]), 2),
+        }
+        for e in gl_entries
+    ]
+    non_routine = [
+        {
+            "event_ref": e["event_ref"], "event_type": e["event_type"], "memo": e["memo"],
+            "account_no": l["account_no"], "debit": l["debit"], "credit": l["credit"],
+        }
+        for e in gl_entries if e["event_type"] in ("opening", "revaluation", "adjustment")
+        for l in e["lines"]
+    ]
 
     with psycopg.connect(require_database_url(), row_factory=dict_row) as conn:
         with conn.cursor() as cur:
             if not costing_ready(cur):
                 raise ValueError("Costing tables are not installed yet.")
-            cur.execute(
-                """
-                SELECT e.event_ref, e.event_type, e.order_no, e.posted_at,
-                       COALESCE(SUM(l.debit), 0) AS debits, COALESCE(SUM(l.credit), 0) AS credits
-                FROM cost_entries e
-                LEFT JOIN cost_lines l ON l.entry_id = e.id
-                GROUP BY e.id, e.event_ref, e.event_type, e.order_no, e.posted_at
-                ORDER BY e.id
-                """
-            )
-            entries = cur.fetchall()
             cur.execute("SELECT part_number, standard_cost, actual_cost FROM standard_costs ORDER BY part_number")
             material_standards = cur.fetchall()
             cur.execute("SELECT role, standard_rate, actual_rate FROM labor_rates ORDER BY role")
@@ -5141,16 +4978,6 @@ def build_audit_package() -> dict:
                 """
             )
             standards_audit = cur.fetchall()
-            cur.execute(
-                """
-                SELECT e.event_ref, e.event_type, e.memo, l.account_no, l.debit, l.credit
-                FROM cost_entries e
-                JOIN cost_lines l ON l.entry_id = e.id
-                WHERE e.event_type IN ('opening', 'revaluation', 'adjustment')
-                ORDER BY e.id, l.id
-                """
-            )
-            non_routine = cur.fetchall()
             cur.execute(
                 """
                 SELECT part_number, SUM(quantity_on_hand) AS on_hand
@@ -6260,8 +6087,6 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
                     group_name = query.get("group", [None])[0]
                     if gl_backed.enabled():
                         try:
-                            refresh_source_tags(company)
-                            gl_backed.push_best_effort()
                             payload = gl_backed.analytics(company, group_name)
                         except Exception:
                             payload = fetch_analytics(company, group_name)
@@ -6283,8 +6108,6 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
                     date_to = query.get("dateTo", [None])[0]
                     if gl_backed.enabled():
                         try:
-                            refresh_source_tags(company)
-                            gl_backed.push_best_effort()
                             payload = gl_backed.ledger(
                                 company, order_no=order_no, limit=limit, before_id=before_id,
                                 event_type=event_type, date_from=date_from, date_to=date_to,
@@ -6417,14 +6240,10 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
                 json_response(self, HTTPStatus.OK, manage_gl_account(payload))
                 return
             if path == "/api/journal-entry":
-                result = create_manual_entry(payload)
-                gl_backed.push_best_effort()  # dual-write: mirror the entry to the GL now
-                json_response(self, HTTPStatus.OK, result)
+                json_response(self, HTTPStatus.OK, create_manual_entry(payload))
                 return
             if path == "/api/journal-entry/reverse":
-                result = reverse_manual_entry(payload)
-                gl_backed.push_best_effort()
-                json_response(self, HTTPStatus.OK, result)
+                json_response(self, HTTPStatus.OK, reverse_manual_entry(payload))
                 return
             if path == "/api/sales/customer":
                 json_response(self, HTTPStatus.OK, manage_customer(payload))
@@ -6433,9 +6252,7 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
                 json_response(self, HTTPStatus.OK, create_sales_order(payload))
                 return
             if path == "/api/sales/invoice":
-                result = ship_and_invoice(payload)
-                gl_backed.push_best_effort()  # dual-write: revenue/COGS to the GL now
-                json_response(self, HTTPStatus.OK, result)
+                json_response(self, HTTPStatus.OK, ship_and_invoice(payload))
                 return
             if path == "/api/purchasing/vendor":
                 json_response(self, HTTPStatus.OK, manage_vendor(payload))
@@ -6453,9 +6270,7 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
                 json_response(self, HTTPStatus.OK, create_vendor_po(payload))
                 return
             if path == "/api/purchasing/receive":
-                result = receive_vendor_po(payload)
-                gl_backed.push_best_effort()  # dual-write: RM/AP to the GL now
-                json_response(self, HTTPStatus.OK, result)
+                json_response(self, HTTPStatus.OK, receive_vendor_po(payload))
                 return
             if path == "/api/intake/email":
                 json_response(self, HTTPStatus.OK, submit_test_email(payload))
