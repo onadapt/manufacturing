@@ -34,20 +34,53 @@ def enabled() -> bool:
     return GL_READS and bool(GL_BASE_URL) and bool(GL_API_KEY)
 
 
-def sync_gl_now() -> None:
-    """Push new local postings into the GL now so a GL-backed read is fresh.
-    Runs the onadapt-gl mirror (--push-only). Raises on failure so the caller
-    falls back to the local ledger rather than showing controls against a stale
-    GL."""
-    if not (GL_DATABASE_URL and LOCAL_DATABASE_URL and os.path.exists(GL_MIRROR_SCRIPT)):
-        raise RuntimeError("GL inline sync is not configured")
+def _configured() -> bool:
+    return bool(GL_DATABASE_URL and LOCAL_DATABASE_URL and os.path.exists(GL_MIRROR_SCRIPT))
+
+
+def _run_mirror(*args) -> None:
+    """Run the onadapt-gl mirror with the given flags. Raises on failure."""
+    if not _configured():
+        raise RuntimeError("GL sync is not configured")
     env = dict(os.environ)
     env["SOURCE_DATABASE_URL"] = LOCAL_DATABASE_URL
     env["DATABASE_URL"] = GL_DATABASE_URL
     subprocess.run(
-        [GL_MIRROR_PYTHON, GL_MIRROR_SCRIPT, "--push-only"],
-        env=env, timeout=20, capture_output=True, check=True,
+        [GL_MIRROR_PYTHON, GL_MIRROR_SCRIPT, *args],
+        env=env, timeout=25, capture_output=True, check=True,
     )
+
+
+def sync_gl_now() -> None:
+    """Push new local postings into the GL now so a GL-backed read is fresh.
+    Raises on failure so the caller falls back to the local ledger rather than
+    reporting controls against a stale GL."""
+    _run_mirror("--push-only")
+
+
+def push_best_effort() -> None:
+    """Dual-write: after a local ledger write, mirror it into the GL right away
+    so the GL-backed pages are current. Never raises — the local write already
+    succeeded and the mirror timer is the backstop. Only runs when reads are on
+    the GL (otherwise the timer keeps the shadow current)."""
+    if not enabled():
+        return
+    try:
+        _run_mirror("--push-only")
+    except Exception:
+        pass
+
+
+def reset_gl() -> None:
+    """Reflect a dev-mode local purge in the GL (clear the tenant + re-mirror).
+    Runs whenever the GL is configured — a purge can't be mirrored by inserts,
+    so this must propagate even when reads are still local. Best-effort."""
+    if not _configured():
+        return
+    try:
+        _run_mirror("--reset")
+    except Exception:
+        pass
 
 
 def gl_get(path: str) -> dict:

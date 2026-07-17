@@ -6326,10 +6326,14 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
                 json_response(self, HTTPStatus.OK, manage_gl_account(payload))
                 return
             if path == "/api/journal-entry":
-                json_response(self, HTTPStatus.OK, create_manual_entry(payload))
+                result = create_manual_entry(payload)
+                gl_backed.push_best_effort()  # dual-write: mirror the entry to the GL now
+                json_response(self, HTTPStatus.OK, result)
                 return
             if path == "/api/journal-entry/reverse":
-                json_response(self, HTTPStatus.OK, reverse_manual_entry(payload))
+                result = reverse_manual_entry(payload)
+                gl_backed.push_best_effort()
+                json_response(self, HTTPStatus.OK, result)
                 return
             if path == "/api/sales/customer":
                 json_response(self, HTTPStatus.OK, manage_customer(payload))
@@ -6338,7 +6342,9 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
                 json_response(self, HTTPStatus.OK, create_sales_order(payload))
                 return
             if path == "/api/sales/invoice":
-                json_response(self, HTTPStatus.OK, ship_and_invoice(payload))
+                result = ship_and_invoice(payload)
+                gl_backed.push_best_effort()  # dual-write: revenue/COGS to the GL now
+                json_response(self, HTTPStatus.OK, result)
                 return
             if path == "/api/purchasing/vendor":
                 json_response(self, HTTPStatus.OK, manage_vendor(payload))
@@ -6356,7 +6362,9 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
                 json_response(self, HTTPStatus.OK, create_vendor_po(payload))
                 return
             if path == "/api/purchasing/receive":
-                json_response(self, HTTPStatus.OK, receive_vendor_po(payload))
+                result = receive_vendor_po(payload)
+                gl_backed.push_best_effort()  # dual-write: RM/AP to the GL now
+                json_response(self, HTTPStatus.OK, result)
                 return
             if path == "/api/intake/email":
                 json_response(self, HTTPStatus.OK, submit_test_email(payload))
@@ -6380,7 +6388,9 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
                 json_response(self, HTTPStatus.OK, agent_execute(payload))
                 return
             if path == "/api/reset-activity":
-                json_response(self, HTTPStatus.OK, reset_activity(payload))
+                result = reset_activity(payload)
+                gl_backed.reset_gl()  # a dev-mode purge must clear the GL too
+                json_response(self, HTTPStatus.OK, result)
                 return
             json_response(self, HTTPStatus.CREATED, create_order(payload))
         except ValueError as exc:
