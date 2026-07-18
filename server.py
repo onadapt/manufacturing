@@ -17,6 +17,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 import gl_backed
+import proc_backed
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -3386,6 +3387,19 @@ def fetch_purchasing() -> dict:
                 )
             for offer in catalog:
                 offer["breaks"] = breaks_by_offer.get(offer["id"], [])
+
+            # Phase 3a: when PROC_READS is on, serve the vendor master + sourcing
+            # catalog from onadapt-procurement (the local queries above are the
+            # fallback). The planner below then prices off the service's catalog.
+            if proc_backed.enabled():
+                try:
+                    vendors = proc_backed.vendors()
+                except Exception:
+                    pass
+                try:
+                    catalog = proc_backed.catalog()
+                except Exception:
+                    pass
 
             # Per-finished-unit usage of each buy part; the transport case is
             # consumed 1:1 by the drone, so case buy parts roll in directly.
