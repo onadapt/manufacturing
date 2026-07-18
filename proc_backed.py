@@ -56,7 +56,10 @@ def vendors() -> list:
 
 
 def catalog() -> list:
-    """Sourcing catalog, shaped like the local read: adds the vendor name,
+    """Sourcing catalog (staged for Phase 3b — not wired into fetch_purchasing
+    yet, because the offer `id` it returns is the service's own, while the local
+    "Prefer" write is keyed by the local offer id; the catalog read flips with
+    its write path). Shaped like the local read: adds the vendor name,
     coalesces the offer's lead time to the vendor's, converts break keys to
     min_qty/unit_price, and keeps the part_number / preferred-first / price
     ordering the planner relies on."""

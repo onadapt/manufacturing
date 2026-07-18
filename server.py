@@ -3388,16 +3388,14 @@ def fetch_purchasing() -> dict:
             for offer in catalog:
                 offer["breaks"] = breaks_by_offer.get(offer["id"], [])
 
-            # Phase 3a: when PROC_READS is on, serve the vendor master + sourcing
-            # catalog from onadapt-procurement (the local queries above are the
-            # fallback). The planner below then prices off the service's catalog.
+            # Phase 3a: when PROC_READS is on, serve the vendor master from
+            # onadapt-procurement (the local query above is the fallback). The
+            # sourcing catalog flips in Phase 3b: its offer ids drive the local
+            # "Prefer" write, and the service assigns its own ids, so the catalog
+            # read must flip together with its write path (offer-id stability).
             if proc_backed.enabled():
                 try:
                     vendors = proc_backed.vendors()
-                except Exception:
-                    pass
-                try:
-                    catalog = proc_backed.catalog()
                 except Exception:
                     pass
 
