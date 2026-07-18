@@ -21,6 +21,7 @@ import gl_backed
 
 BASE_DIR = Path(__file__).resolve().parent
 DATABASE_URL = os.environ.get("DATABASE_URL")
+APP_VERSION = "1.0.0"
 ACTIVE_STATUSES = ("planned", "released", "in_progress", "hold")
 DEFAULT_FINISHED_SKU = "DRN-FG-600"
 ORDER_PREFIXES = {"DRN-FG-600": "DRN-PO-", "CASE-FG-500": "CASE-PO-"}
@@ -5515,6 +5516,9 @@ class ManufacturingHandler(SimpleHTTPRequestHandler):
         parsed_url = urlparse(self.path)
         path = parsed_url.path
         query = parse_qs(parsed_url.query)
+        if path == "/api/version":
+            json_response(self, HTTPStatus.OK, {"service": "manufacturing", "version": APP_VERSION})
+            return
         if path == "/api/production-orders/latest":
             try:
                 json_response(self, HTTPStatus.OK, fetch_order_snapshot(query.get("orderNo", [None])[0]))
@@ -5795,7 +5799,7 @@ def main() -> None:
     # Order-intake worker: mailbox polling (if configured), email
     # classification, and backorder fulfillment run in the background.
     threading.Thread(target=intake_worker, daemon=True).start()
-    print(f"Manufacturing app running at http://127.0.0.1:{port}/production-orders.html")
+    print(f"Manufacturing app {APP_VERSION} running at http://127.0.0.1:{port}/production-orders.html")
     server.serve_forever()
 
 
