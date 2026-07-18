@@ -2072,7 +2072,8 @@ OPENING_ACCOUNT = "3000"
 
 
 def costing_ready(cur) -> bool:
-    cur.execute("SELECT to_regclass('cost_entries') AS reg")
+    # Costing master data (standards). The ledger itself now lives in the GL.
+    cur.execute("SELECT to_regclass('standard_costs') AS reg")
     return cur.fetchone()["reg"] is not None
 
 
